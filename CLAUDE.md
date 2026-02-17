@@ -22,6 +22,11 @@ go test ./...
 
 # Build Docker image
 docker build -t stylerag .
+
+# Database migrations (Flyway)
+flyway -configFiles=flyway.conf migrate    # Run pending migrations
+flyway -configFiles=flyway.conf info       # Check migration status
+flyway -configFiles=flyway.conf validate   # Validate migrations
 ```
 
 ## Tech Stack
@@ -48,8 +53,11 @@ stylerag/
 │   ├── session/                    # Redis-backed user profiles
 │   ├── catalog/                    # PostgreSQL repo + importers
 │   └── api/                        # HTTP handlers, middleware, DTOs
+├── db/
+│   └── migrations/                 # Flyway SQL migrations (V{timestamp}__)
 ├── knowledge/                      # Fashion knowledge base (Markdown)
 ├── config/
+├── flyway.conf                     # Flyway configuration
 └── Dockerfile
 ```
 
