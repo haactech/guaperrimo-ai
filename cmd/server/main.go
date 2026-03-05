@@ -11,6 +11,7 @@ import (
 
 	"stylerag/internal/api"
 	"stylerag/internal/config"
+	"stylerag/internal/storage"
 )
 
 func main() {
@@ -21,7 +22,13 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	router := api.NewRouter(cfg)
+	imageStore, err := storage.NewR2Store(context.Background(), cfg)
+	if err != nil {
+		slog.Error("failed to initialize R2 storage", "error", err)
+		os.Exit(1)
+	}
+
+	router := api.NewRouter(cfg, imageStore)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

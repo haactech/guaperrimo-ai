@@ -20,6 +20,13 @@ type Config struct {
 
 	// Voice
 	AvalonAPIKey string
+
+	// Storage (Cloudflare R2)
+	R2AccountID       string
+	R2AccessKeyID     string
+	R2AccessKeySecret string
+	R2BucketName      string
+	R2PublicURL       string
 }
 
 func Load() *Config {
@@ -35,6 +42,12 @@ func Load() *Config {
 		OpenAIAPIKey:    getEnv("OPENAI_API_KEY", ""),
 
 		AvalonAPIKey: getEnv("AVALON_API_KEY", ""),
+
+		R2AccountID:       getEnv("R2_ACCOUNT_ID", ""),
+		R2AccessKeyID:     getEnv("R2_ACCESS_KEY_ID", ""),
+		R2AccessKeySecret: getEnv("R2_ACCESS_KEY_SECRET", ""),
+		R2BucketName:      getEnv("R2_BUCKET_NAME", ""),
+		R2PublicURL:       getEnv("R2_PUBLIC_URL", ""),
 	}
 }
 

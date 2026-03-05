@@ -4,13 +4,16 @@ import (
 	"net/http"
 
 	"stylerag/internal/config"
+	"stylerag/internal/storage"
 )
 
-func NewRouter(cfg *config.Config) http.Handler {
+func NewRouter(cfg *config.Config, imageStore storage.ImageStore) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /ready", readyHandler)
+
+	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(imageStore))
 
 	// TODO: Add session and message endpoints
 	// mux.HandleFunc("POST /session", sessionHandler)

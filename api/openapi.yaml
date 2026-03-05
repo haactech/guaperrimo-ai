@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: StyleRAG API
+  description: AI-powered image styling advisor for fashion e-commerce.
+  version: 0.1.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /ready:
+    get:
+      summary: Readiness check
+      operationId: getReady
+      responses:
+        "200":
+          description: Service is ready to accept requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /session/{id}/image:
+    post:
+      summary: Upload welcome image
+      description: |
+        Uploads the user's welcome image (current outfit photo) to Cloudflare R2.
+        The image is stored for later style analysis by the vision module.
+        Accepts JPEG, PNG, and WebP formats up to 10 MB.
+      operationId: uploadSessionImage
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Session identifier.
+          schema:
+            type: string
+          example: "abc-123"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: Image file (JPEG, PNG, or WebP, max 10 MB).
+      responses:
+        "200":
+          description: Image uploaded successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageUploadResponse"
+              example:
+                url: "https://pub-xxx.r2.dev/sessions/abc-123/welcome_1709654321000.jpg"
+                session_id: "abc-123"
+        "400":
+          description: Missing session ID or invalid/missing image field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "missing or invalid image field"
+        "413":
+          description: Image exceeds 10 MB limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "image exceeds 10MB limit"
+        "415":
+          description: Unsupported image format.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "unsupported image type, allowed: JPEG, PNG, WebP"
+        "500":
+          description: Internal upload failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "upload failed"
+
+components:
+  schemas:
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ImageUploadResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          description: Public URL of the uploaded image.
+        session_id:
+          type: string
+          description: Session the image belongs to.
+      required:
+        - url
+        - session_id
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+      required:
+        - error
