@@ -11,7 +11,9 @@ import (
 
 	"stylerag/internal/api"
 	"stylerag/internal/config"
+	"stylerag/internal/llm"
 	"stylerag/internal/storage"
+	"stylerag/internal/vision"
 )
 
 func main() {
@@ -28,13 +30,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := api.NewRouter(cfg, imageStore)
+	// LLM providers and router
+	var potentProvider, economyProvider llm.Provider
+	switch cfg.LLMProvider {
+	case "mistral":
+		slog.Info("using Mistral LLM provider", "potent", cfg.MistralPotentModel, "economy", cfg.MistralEconomyModel, "api_key_len", len(cfg.MistralAPIKey), "api_key_prefix", cfg.MistralAPIKey[:min(4, len(cfg.MistralAPIKey))])
+		potentProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralPotentModel)
+		economyProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralEconomyModel)
+	default: // "kimi"
+		slog.Info("using Kimi LLM provider", "potent", cfg.KimiPotentModel, "economy", cfg.KimiEconomyModel)
+		potentProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiPotentModel)
+		economyProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiEconomyModel)
+	}
+	llmRouter := llm.NewRouter(potentProvider, economyProvider)
+
+	// Vision: analyzer (potent) + style advisor (economy)
+	analyzer := vision.NewLLMAnalyzer(llmRouter)
+	advisor := vision.NewStyleAdvisor(llmRouter)
+
+	router := api.NewRouter(cfg, imageStore, analyzer, advisor)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 

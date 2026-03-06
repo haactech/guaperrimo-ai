@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"stylerag/internal/config"
 
@@ -57,4 +58,41 @@ func (s *R2Store) Upload(ctx context.Context, input UploadInput) (*UploadOutput,
 
 	url := fmt.Sprintf("%s/%s", s.publicURL, input.Key)
 	return &UploadOutput{URL: url}, nil
+}
+
+// Download retrieves the bytes of an object from R2.
+func (s *R2Store) Download(ctx context.Context, key string) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("downloading from r2: %w", err)
+	}
+	defer out.Body.Close()
+
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading r2 object body: %w", err)
+	}
+	return data, nil
+}
+
+// ListKeys returns object keys matching the given prefix.
+func (s *R2Store) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: &s.bucket,
+		Prefix: &prefix,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing r2 keys: %w", err)
+	}
+
+	keys := make([]string, 0, len(out.Contents))
+	for _, obj := range out.Contents {
+		if obj.Key != nil {
+			keys = append(keys, *obj.Key)
+		}
+	}
+	return keys, nil
 }

@@ -12,16 +12,32 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+// ContentBlock represents a single piece of content in a multimodal message
+type ContentBlock struct {
+	Type     string `json:"type"`      // "text" or "image_url"
+	Text     string `json:"text"`      // for type="text"
+	ImageURL string `json:"image_url"` // for type="image_url": "data:image/jpeg;base64,..."
+}
+
+// Message represents a chat message. If ContentBlocks is non-empty, it takes
+// precedence over Content for multimodal requests.
 type Message struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role          Role           `json:"role"`
+	Content       string         `json:"content"`
+	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"`
 }
 
 type CompletionRequest struct {
-	Messages    []Message
-	MaxTokens   int
-	Temperature float64
-	Tools       []Tool
+	Messages       []Message
+	MaxTokens      int
+	Temperature    float64
+	Tools          []Tool
+	ResponseFormat *ResponseFormat // optional: force structured output
+}
+
+// ResponseFormat controls the output format of the model.
+type ResponseFormat struct {
+	Type string `json:"type"` // "json_object" or "text"
 }
 
 type CompletionResponse struct {

@@ -20,4 +20,6 @@ type UploadOutput struct {
 // ImageStore abstracts image storage operations.
 type ImageStore interface {
 	Upload(ctx context.Context, input UploadInput) (*UploadOutput, error)
+	Download(ctx context.Context, key string) ([]byte, error)
+	ListKeys(ctx context.Context, prefix string) ([]string, error)
 }
