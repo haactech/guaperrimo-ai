@@ -62,18 +62,18 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 		// Load or create session
 		state, err := deps.Store.Get(sessionID)
 		if err != nil {
-			// Session not found — only allowed for type=image (new session)
 			if req.Type != "image" {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found or expired"})
 				return
 			}
 			state = &session.SessionState{
-				ID:        sessionID,
-				Phase:     session.PhaseCapture,
-				Turn:      0,
-				Responses: []session.UserResponse{},
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
+				ID:           sessionID,
+				Phase:        session.PhaseCapture,
+				Turn:         0,
+				Responses:    []session.UserResponse{},
+				CoveredFacts: map[string]string{},
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
 			}
 		}
 
@@ -150,7 +150,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	state.Turn = 1
 	state.Phase = session.PhaseDiscovery
 
-	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, nil)
+	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, state.CoveredFacts)
 	if err != nil {
 		return nil, fmt.Errorf("first discovery question failed: %w", err)
 	}
@@ -176,7 +176,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 }
 
 func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string, req *ChatRequest) (*ChatResponse, error) {
-	// Build user response from request
+	// Record user response
 	userResp := session.UserResponse{
 		Timestamp: time.Now(),
 	}
@@ -192,31 +192,36 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	state.Responses = append(state.Responses, userResp)
 	state.Turn++
 
-	// Recover the typed analysis
 	analysis, ok := state.OutfitAnalysis.(*vision.OutfitAnalysis)
 	if !ok {
 		return nil, fmt.Errorf("invalid outfit analysis in session state")
 	}
 
-	// Collect covered categories from previous discovery responses
-	coveredCategories := collectCoveredCategories(state.Responses)
-
-	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, coveredCategories)
+	// Ask the LLM for the next question + extract facts from the user's latest answer
+	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, state.CoveredFacts)
 	if err != nil {
 		return nil, fmt.Errorf("discovery question failed: %w", err)
 	}
 
 	state.AssistantMessages = append(state.AssistantMessages, discovery.Message)
 
-	// Update covered categories from LLM response
-	if len(discovery.CoveredCategories) > 0 {
-		if len(state.Responses) > 0 {
-			state.Responses[len(state.Responses)-1].Category = inferCategory(discovery.CoveredCategories, coveredCategories)
+	// Accumulate extracted facts into session state
+	for cat, fact := range discovery.ExtractedFacts {
+		if fact != "" {
+			state.CoveredFacts[cat] = fact
 		}
 	}
 
-	// Check if we should advance to diagnosis + recommendation
-	if discovery.AdvanceToDiagnosis || state.Turn >= 8 {
+	slog.Info("chat: discovery turn",
+		"session_id", sessionID,
+		"turn", state.Turn,
+		"covered_facts", state.CoveredFacts,
+		"new_facts", discovery.ExtractedFacts,
+	)
+
+	// Deterministic exit: backend decides when we have enough info
+	shouldAdvance := state.ReadyForDiagnosis() || state.Turn >= session.MaxDiscoveryTurns
+	if shouldAdvance {
 		return handleDiagnosisAndRecommendation(ctx, deps, state, sessionID, analysis)
 	}
 
@@ -277,34 +282,4 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 		IsFinal:         true,
 		PriorityActions: actions,
 	}, nil
-}
-
-// collectCoveredCategories extracts unique categories from responses.
-func collectCoveredCategories(responses []session.UserResponse) []string {
-	seen := map[string]bool{}
-	var cats []string
-	for _, r := range responses {
-		if r.Category != "" && !seen[r.Category] {
-			seen[r.Category] = true
-			cats = append(cats, r.Category)
-		}
-	}
-	return cats
-}
-
-// inferCategory finds the newly covered category by diffing current vs previous.
-func inferCategory(current, previous []string) string {
-	prev := map[string]bool{}
-	for _, c := range previous {
-		prev[c] = true
-	}
-	for _, c := range current {
-		if !prev[c] {
-			return c
-		}
-	}
-	if len(current) > 0 {
-		return current[len(current)-1]
-	}
-	return ""
 }

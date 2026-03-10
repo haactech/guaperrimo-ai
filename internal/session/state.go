@@ -14,15 +14,38 @@ const (
 
 // SessionState tracks the full state of a conversational session.
 type SessionState struct {
-	ID                string         `json:"id"`
-	Phase             Phase          `json:"phase"`
-	Turn              int            `json:"turn"`
-	OutfitAnalysis    any            `json:"outfit_analysis"` // *vision.OutfitAnalysis stored as any to avoid circular imports
-	Responses         []UserResponse `json:"responses"`
-	AssistantMessages []string       `json:"assistant_messages"` // what the bot said each turn
-	Diagnosis         *StyleDiagnosis `json:"diagnosis,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
+	ID                string            `json:"id"`
+	Phase             Phase             `json:"phase"`
+	Turn              int               `json:"turn"`
+	OutfitAnalysis    any               `json:"outfit_analysis"` // *vision.OutfitAnalysis stored as any to avoid circular imports
+	Responses         []UserResponse    `json:"responses"`
+	AssistantMessages []string          `json:"assistant_messages"` // what the bot said each turn
+	CoveredFacts      map[string]string `json:"covered_facts"`     // category → summary of what we learned
+	Diagnosis         *StyleDiagnosis   `json:"diagnosis,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+}
+
+// RequiredCategories are the minimum needed before advancing to diagnosis.
+var RequiredCategories = []string{"occasion", "intention"}
+
+// OptionalCategories provide richer context but aren't blocking.
+var AllCategories = []string{"occasion", "intention", "exploration", "pain_points", "aspirational", "constraints", "budget"}
+
+// MaxDiscoveryTurns is the hard cap on discovery questions.
+const MaxDiscoveryTurns = 5
+
+// ReadyForDiagnosis returns true when we have occasion + intention + at least 1 more fact.
+func (s *SessionState) ReadyForDiagnosis() bool {
+	if s.CoveredFacts == nil {
+		return false
+	}
+	_, hasOccasion := s.CoveredFacts["occasion"]
+	_, hasIntention := s.CoveredFacts["intention"]
+	if !hasOccasion || !hasIntention {
+		return false
+	}
+	return len(s.CoveredFacts) >= 3
 }
 
 // UserResponse captures a single user answer during the discovery phase.

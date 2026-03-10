@@ -12,12 +12,11 @@ import (
 
 // DiscoveryResult is the parsed LLM response for a discovery turn.
 type DiscoveryResult struct {
-	Message             string       `json:"message"`
-	InputMode           string       `json:"input_mode"`
-	Options             []DiscOption `json:"options"`
-	AdvanceToDiagnosis  bool         `json:"advance_to_diagnosis"`
-	CoveredCategories   []string     `json:"covered_categories"`
-	Reasoning           string       `json:"reasoning"`
+	Message        string            `json:"message"`
+	InputMode      string            `json:"input_mode"`
+	Options        []DiscOption      `json:"options"`
+	ExtractedFacts map[string]string `json:"extracted_facts"`
+	Reasoning      string            `json:"reasoning"`
 }
 
 type DiscOption struct {
@@ -34,25 +33,17 @@ func NewDiscoveryManager(router *llm.Router) *DiscoveryManager {
 	return &DiscoveryManager{router: router}
 }
 
-func (d *DiscoveryManager) NextQuestion(ctx context.Context, analysis *OutfitAnalysis, responses []session.UserResponse, assistantMessages []string, turn int, coveredCategories []string) (*DiscoveryResult, error) {
+func (d *DiscoveryManager) NextQuestion(ctx context.Context, analysis *OutfitAnalysis, responses []session.UserResponse, assistantMessages []string, turn int, coveredFacts map[string]string) (*DiscoveryResult, error) {
 	analysisJSON, err := json.Marshal(analysis)
 	if err != nil {
 		return nil, fmt.Errorf("discovery: marshal analysis: %w", err)
 	}
 
 	history := buildConversationHistory(assistantMessages, responses)
+	knownSection := buildKnownFacts(coveredFacts)
+	pendingSection := buildPendingCategories(coveredFacts)
 
-	minReached := "false"
-	if turn >= 3 {
-		minReached = "true"
-	}
-
-	covered := "ninguna"
-	if len(coveredCategories) > 0 {
-		covered = strings.Join(coveredCategories, ", ")
-	}
-
-	prompt := fmt.Sprintf(discoveryPrompt, string(analysisJSON), history, turn, minReached, covered)
+	prompt := fmt.Sprintf(discoveryPrompt, string(analysisJSON), history, knownSection, pendingSection, turn)
 
 	req := llm.CompletionRequest{
 		Messages: []llm.Message{
@@ -76,7 +67,7 @@ func (d *DiscoveryManager) NextQuestion(ctx context.Context, analysis *OutfitAna
 }
 
 // buildConversationHistory interleaves assistant messages and user responses
-// into a readable chat transcript so the LLM can see the full flow and vary its tone.
+// into a readable chat transcript.
 func buildConversationHistory(assistantMessages []string, responses []session.UserResponse) string {
 	if len(assistantMessages) == 0 && len(responses) == 0 {
 		return "(primera interacción, no hay historial)"
@@ -103,4 +94,46 @@ func buildConversationHistory(assistantMessages []string, responses []session.Us
 	}
 
 	return b.String()
+}
+
+var categoryLabels = map[string]string{
+	"occasion":    "Ocasión",
+	"intention":   "Intención / qué quiere proyectar",
+	"exploration": "Enfoque (refinar vs explorar)",
+	"pain_points": "Puntos de dolor con su look actual",
+	"aspirational": "Referente de estilo",
+	"constraints": "Restricciones / qué evitar",
+	"budget":      "Presupuesto / abierto a piezas nuevas",
+}
+
+func buildKnownFacts(facts map[string]string) string {
+	if len(facts) == 0 {
+		return "(nada aún)"
+	}
+	var b strings.Builder
+	for cat, fact := range facts {
+		label := categoryLabels[cat]
+		if label == "" {
+			label = cat
+		}
+		fmt.Fprintf(&b, "- %s: %s\n", label, fact)
+	}
+	return b.String()
+}
+
+func buildPendingCategories(coveredFacts map[string]string) string {
+	var pending []string
+	for _, cat := range session.AllCategories {
+		if _, ok := coveredFacts[cat]; !ok {
+			label := categoryLabels[cat]
+			if label == "" {
+				label = cat
+			}
+			pending = append(pending, fmt.Sprintf("- %s (%s)", cat, label))
+		}
+	}
+	if len(pending) == 0 {
+		return "(todas cubiertas)"
+	}
+	return strings.Join(pending, "\n")
 }
