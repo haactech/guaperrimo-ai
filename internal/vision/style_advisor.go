@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"stylerag/internal/llm"
+	"stylerag/internal/session"
 )
 
 // StyleAdvice is the conversational response generated from an OutfitAnalysis.
@@ -53,8 +54,37 @@ func (a *StyleAdvisor) GenerateStyleAdvice(ctx context.Context, analysis *Outfit
 	}
 
 	var advice StyleAdvice
-	if err := json.Unmarshal([]byte(resp.Content), &advice); err != nil {
+	if err := json.Unmarshal([]byte(cleanJSON(resp.Content)), &advice); err != nil {
 		return nil, fmt.Errorf("style advisor: failed to parse response: %w\nraw: %s", err, resp.Content)
+	}
+
+	return &advice, nil
+}
+
+func (a *StyleAdvisor) GenerateRecommendation(ctx context.Context, diagnosis *session.StyleDiagnosis) (*session.PersonalizedAdvice, error) {
+	diagnosisJSON, err := json.Marshal(diagnosis)
+	if err != nil {
+		return nil, fmt.Errorf("recommendation: marshal diagnosis: %w", err)
+	}
+
+	prompt := fmt.Sprintf(recommendationPrompt, string(diagnosisJSON))
+
+	req := llm.CompletionRequest{
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: prompt},
+		},
+		MaxTokens:   8192,
+		Temperature: 0.7,
+	}
+
+	resp, err := a.router.Complete(ctx, llm.TurnTypeRecommendation, req)
+	if err != nil {
+		return nil, fmt.Errorf("recommendation: LLM call failed: %w", err)
+	}
+
+	var advice session.PersonalizedAdvice
+	if err := json.Unmarshal([]byte(cleanJSON(resp.Content)), &advice); err != nil {
+		return nil, fmt.Errorf("recommendation: failed to parse response: %w\nraw: %s", err, resp.Content)
 	}
 
 	return &advice, nil

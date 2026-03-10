@@ -49,7 +49,7 @@ func (a *LLMAnalyzer) AnalyzeOutfit(ctx context.Context, imageData []byte) (*Out
 	}
 
 	var analysis OutfitAnalysis
-	if err := json.Unmarshal([]byte(resp.Content), &analysis); err != nil {
+	if err := json.Unmarshal([]byte(cleanJSON(resp.Content)), &analysis); err != nil {
 		return nil, fmt.Errorf("vision: failed to parse LLM response as OutfitAnalysis: %w\nraw response: %s", err, resp.Content)
 	}
 

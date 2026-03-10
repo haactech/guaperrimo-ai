@@ -8,10 +8,13 @@ import (
 type TurnType string
 
 const (
-	TurnTypeImageAnalysis    TurnType = "image_analysis"    // Requires vision - use potent
-	TurnTypePreferenceGather TurnType = "preference_gather" // Simple collection - use economy
-	TurnTypeStyleTranslation TurnType = "style_translation" // Critical step - use potent
-	TurnTypeResultPresent    TurnType = "result_present"    // Empathy needed - use potent
+	TurnTypeImageAnalysis      TurnType = "image_analysis"      // Requires vision - use potent
+	TurnTypePreferenceGather   TurnType = "preference_gather"   // Simple collection - use economy
+	TurnTypeStyleTranslation   TurnType = "style_translation"   // Critical step - use potent
+	TurnTypeResultPresent      TurnType = "result_present"      // Empathy needed - use potent
+	TurnTypeDiscoveryQuestion  TurnType = "discovery_question"  // Conversational question - use economy
+	TurnTypeDiagnosis          TurnType = "diagnosis"           // Style diagnosis - use potent
+	TurnTypeRecommendation     TurnType = "recommendation"      // Final advice - use economy
 )
 
 // Router selects the appropriate model tier based on turn type
@@ -29,7 +32,7 @@ func NewRouter(potent, economy Provider) *Router {
 
 func (r *Router) SelectProvider(turnType TurnType) Provider {
 	switch turnType {
-	case TurnTypePreferenceGather:
+	case TurnTypePreferenceGather, TurnTypeDiscoveryQuestion, TurnTypeRecommendation:
 		return r.economy
 	default:
 		return r.potent

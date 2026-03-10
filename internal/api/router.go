@@ -8,7 +8,7 @@ import (
 	"stylerag/internal/vision"
 )
 
-func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor) http.Handler {
+func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
@@ -17,9 +17,9 @@ func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer visio
 	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(imageStore))
 	mux.HandleFunc("POST /session/{id}/analyze", analyzeHandler(imageStore, analyzer, advisor))
 
-	// TODO: Add session and message endpoints
-	// mux.HandleFunc("POST /session", sessionHandler)
-	// mux.HandleFunc("POST /message", messageHandler)
+	if chatDeps != nil {
+		mux.HandleFunc("POST /session/{id}/chat", chatHandler(chatDeps))
+	}
 
 	return mux
 }

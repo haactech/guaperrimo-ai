@@ -12,6 +12,7 @@ import (
 	"stylerag/internal/api"
 	"stylerag/internal/config"
 	"stylerag/internal/llm"
+	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/vision"
 )
@@ -48,7 +49,20 @@ func main() {
 	analyzer := vision.NewLLMAnalyzer(llmRouter)
 	advisor := vision.NewStyleAdvisor(llmRouter)
 
-	router := api.NewRouter(cfg, imageStore, analyzer, advisor)
+	// Conversational advisor dependencies
+	sessionStore := session.NewInMemoryStore(30 * time.Minute)
+	discovery := vision.NewDiscoveryManager(llmRouter)
+	diagnosis := vision.NewDiagnosisGenerator(llmRouter)
+	chatDeps := &api.ChatDeps{
+		Store:      sessionStore,
+		ImageStore: imageStore,
+		Analyzer:   analyzer,
+		Discovery:  discovery,
+		Diagnosis:  diagnosis,
+		Advisor:    advisor,
+	}
+
+	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
