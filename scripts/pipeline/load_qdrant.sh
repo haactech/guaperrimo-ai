@@ -4,7 +4,7 @@ set -euo pipefail
 INPUT_CSV="${1:-data/processed/products.csv}"
 QDRANT_URL="${QDRANT_URL:-http://localhost:6333}"
 QDRANT_COLLECTION="${QDRANT_COLLECTION:-products}"
-QDRANT_VECTOR_SIZE="${QDRANT_VECTOR_SIZE:-64}"
+QDRANT_VECTOR_SIZE="${QDRANT_VECTOR_SIZE:-1536}"
 QDRANT_BATCH_SIZE="${QDRANT_BATCH_SIZE:-256}"
 
 if [[ ! -f "${INPUT_CSV}" ]]; then

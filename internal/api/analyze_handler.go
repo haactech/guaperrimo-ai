@@ -19,24 +19,23 @@ func analyzeHandler(store storage.ImageStore, analyzer vision.Analyzer, advisor 
 			return
 		}
 
-		slog.Info("analyze: started", "session_id", sessionID)
-		start := time.Now()
-
 		ctx := r.Context()
+		slog.InfoContext(ctx, "analyze: started", "session_id", sessionID)
+		start := time.Now()
 		prefix := fmt.Sprintf("sessions/%s/", sessionID)
 
 		// Find the most recent image for this session
-		slog.Info("analyze: listing keys", "prefix", prefix)
+		slog.InfoContext(ctx, "analyze: listing keys", "prefix", prefix)
 		keys, err := store.ListKeys(ctx, prefix)
 		if err != nil {
-			slog.Error("analyze: failed to list keys", "error", err, "session_id", sessionID)
+			slog.ErrorContext(ctx, "analyze: failed to list keys", "error", err, "session_id", sessionID)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to retrieve session images"})
 			return
 		}
-		slog.Info("analyze: keys found", "count", len(keys), "keys", keys)
+		slog.InfoContext(ctx, "analyze: keys found", "count", len(keys), "keys", keys)
 
 		if len(keys) == 0 {
-			slog.Warn("analyze: no images found", "session_id", sessionID, "prefix", prefix)
+			slog.WarnContext(ctx, "analyze: no images found", "session_id", sessionID, "prefix", prefix)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no image found for this session"})
 			return
 		}
@@ -44,42 +43,42 @@ func analyzeHandler(store storage.ImageStore, analyzer vision.Analyzer, advisor 
 		// Keys include timestamps, so sorting gives us chronological order
 		sort.Strings(keys)
 		latestKey := keys[len(keys)-1]
-		slog.Info("analyze: downloading image", "key", latestKey)
+		slog.InfoContext(ctx, "analyze: downloading image", "key", latestKey)
 
 		// Download image bytes
 		imageData, err := store.Download(ctx, latestKey)
 		if err != nil {
-			slog.Error("analyze: download failed", "error", err, "key", latestKey)
+			slog.ErrorContext(ctx, "analyze: download failed", "error", err, "key", latestKey)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to download image"})
 			return
 		}
-		slog.Info("analyze: image downloaded", "size_bytes", len(imageData), "elapsed", time.Since(start))
+		slog.InfoContext(ctx, "analyze: image downloaded", "size_bytes", len(imageData), "elapsed", time.Since(start))
 
 		// Analyze outfit
-		slog.Info("analyze: calling LLM analyzer (potent)")
+		slog.InfoContext(ctx, "analyze: calling LLM analyzer (potent)")
 		analysisStart := time.Now()
 		analysis, err := analyzer.AnalyzeOutfit(ctx, imageData)
 		if err != nil {
-			slog.Error("analyze: outfit analysis failed", "error", err, "session_id", sessionID, "elapsed", time.Since(analysisStart))
+			slog.ErrorContext(ctx, "analyze: outfit analysis failed", "error", err, "session_id", sessionID, "elapsed", time.Since(analysisStart))
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "image analysis failed"})
 			return
 		}
-		slog.Info("analyze: outfit analysis done",
+		slog.InfoContext(ctx, "analyze: outfit analysis done",
 			"styles", analysis.DetectedStyles,
 			"items_count", len(analysis.DetectedItems),
 			"elapsed", time.Since(analysisStart),
 		)
 
 		// Generate conversational style advice
-		slog.Info("analyze: calling style advisor (economy)")
+		slog.InfoContext(ctx, "analyze: calling style advisor (economy)")
 		advisorStart := time.Now()
 		advice, err := advisor.GenerateStyleAdvice(ctx, analysis)
 		if err != nil {
-			slog.Error("analyze: style advice failed", "error", err, "session_id", sessionID, "elapsed", time.Since(advisorStart))
+			slog.ErrorContext(ctx, "analyze: style advice failed", "error", err, "session_id", sessionID, "elapsed", time.Since(advisorStart))
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "style advice generation failed"})
 			return
 		}
-		slog.Info("analyze: style advice done",
+		slog.InfoContext(ctx, "analyze: style advice done",
 			"options_count", len(advice.Options),
 			"elapsed", time.Since(advisorStart),
 		)
@@ -94,7 +93,7 @@ func analyzeHandler(store storage.ImageStore, analyzer vision.Analyzer, advisor 
 			}
 		}
 
-		slog.Info("analyze: completed", "session_id", sessionID, "total_elapsed", time.Since(start))
+		slog.InfoContext(ctx, "analyze: completed", "session_id", sessionID, "total_elapsed", time.Since(start))
 		writeJSON(w, http.StatusOK, StyleAnalysisResponse{
 			Message:  advice.Message,
 			Options:  options,

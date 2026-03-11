@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"stylerag/internal/catalog"
 	"stylerag/internal/config"
 	"stylerag/internal/storage"
@@ -29,7 +31,22 @@ func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer visio
 		mux.HandleFunc("POST /products/batch", batchGetProductsHandler(catalogRepo))
 	}
 
-	return mux
+	if cfg.ImageDir != "" {
+		imageFS := http.StripPrefix("/images/products/", http.FileServer(http.Dir(cfg.ImageDir)))
+		mux.Handle("GET /images/products/", imageFS)
+	}
+
+	// Middleware chain: otelhttp (outer) → PanicRecovery → Logging → mux
+	var handler http.Handler = mux
+	handler = LoggingMiddleware(handler)
+	handler = PanicRecoveryMiddleware(handler)
+	handler = otelhttp.NewHandler(handler, "stylerag",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + r.URL.Path
+		}),
+	)
+
+	return handler
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {

@@ -96,7 +96,7 @@ func (p *KimiProvider) Complete(ctx context.Context, req CompletionRequest) (*Co
 		return nil, fmt.Errorf("kimi: read response: %w", err)
 	}
 
-	slog.Debug("kimi: raw API response", "status", resp.StatusCode, "body", string(respBody))
+	slog.DebugContext(ctx, "kimi: raw API response", "status", resp.StatusCode, "body", string(respBody))
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("kimi: API error (status %d): %s", resp.StatusCode, string(respBody))
@@ -113,7 +113,7 @@ func (p *KimiProvider) Complete(ctx context.Context, req CompletionRequest) (*Co
 
 	choice := kResp.Choices[0]
 	if choice.Message.Content == "" {
-		slog.Warn("kimi: empty content in response", "raw_body", string(respBody))
+		slog.WarnContext(ctx, "kimi: empty content in response", "raw_body", string(respBody))
 	}
 	return &CompletionResponse{
 		Content: choice.Message.Content,

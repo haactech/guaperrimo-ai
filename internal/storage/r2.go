@@ -10,6 +10,10 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // R2Store implements ImageStore using Cloudflare R2 (S3-compatible API).
@@ -44,8 +48,16 @@ func NewR2Store(ctx context.Context, cfg *config.Config) (*R2Store, error) {
 	}, nil
 }
 
+var storageTracer = otel.Tracer("stylerag/storage")
+
 // Upload stores a file in R2 and returns its public URL.
 func (s *R2Store) Upload(ctx context.Context, input UploadInput) (*UploadOutput, error) {
+	ctx, span := storageTracer.Start(ctx, "storage.upload", trace.WithAttributes(
+		attribute.String("storage.key", input.Key),
+		attribute.String("storage.content_type", input.ContentType),
+	))
+	defer span.End()
+
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      &s.bucket,
 		Key:         &input.Key,
@@ -53,6 +65,8 @@ func (s *R2Store) Upload(ctx context.Context, input UploadInput) (*UploadOutput,
 		ContentType: &input.ContentType,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("uploading to r2: %w", err)
 	}
 
@@ -62,6 +76,11 @@ func (s *R2Store) Upload(ctx context.Context, input UploadInput) (*UploadOutput,
 
 // Download retrieves the bytes of an object from R2.
 func (s *R2Store) Download(ctx context.Context, key string) ([]byte, error) {
+	ctx, span := storageTracer.Start(ctx, "storage.download", trace.WithAttributes(
+		attribute.String("storage.key", key),
+	))
+	defer span.End()
+
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: &s.bucket,
 		Key:    &key,
@@ -80,6 +99,11 @@ func (s *R2Store) Download(ctx context.Context, key string) ([]byte, error) {
 
 // ListKeys returns object keys matching the given prefix.
 func (s *R2Store) ListKeys(ctx context.Context, prefix string) ([]string, error) {
+	ctx, span := storageTracer.Start(ctx, "storage.list_keys", trace.WithAttributes(
+		attribute.String("storage.key", prefix),
+	))
+	defer span.End()
+
 	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: &s.bucket,
 		Prefix: &prefix,

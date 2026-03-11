@@ -17,20 +17,31 @@ import (
 	"stylerag/internal/rag"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
+	"stylerag/internal/telemetry"
 	"stylerag/internal/vision"
 )
 
 func main() {
 	cfg := config.Load()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	// Initialize OpenTelemetry tracing
+	otelShutdown, err := telemetry.Init(context.Background(), "stylerag", "0.1.0")
+	if err != nil {
+		slog.Error("failed to initialize telemetry", "error", err)
+		os.Exit(1)
+	}
+	defer otelShutdown(context.Background())
+
+	logger := slog.New(telemetry.NewTracedHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,
-	}))
+	})))
 	slog.SetDefault(logger)
 
-	imageStore, err := storage.NewR2Store(context.Background(), cfg)
+	initCtx := context.Background()
+
+	imageStore, err := storage.NewR2Store(initCtx, cfg)
 	if err != nil {
-		slog.Error("failed to initialize R2 storage", "error", err)
+		slog.ErrorContext(initCtx, "failed to initialize R2 storage", "error", err)
 		os.Exit(1)
 	}
 
@@ -41,30 +52,30 @@ func main() {
 		sessionRepo  *database.SessionRepo
 	)
 	if cfg.PostgresURL != "" {
-		dbPool, err := database.NewPostgresPool(context.Background(), cfg.PostgresURL)
+		dbPool, err := database.NewPostgresPool(initCtx, cfg.PostgresURL)
 		if err != nil {
-			slog.Error("failed to connect to PostgreSQL", "error", err)
+			slog.ErrorContext(initCtx, "failed to connect to PostgreSQL", "error", err)
 			os.Exit(1)
 		}
 		defer dbPool.Close()
-		slog.Info("connected to PostgreSQL")
+		slog.InfoContext(initCtx, "connected to PostgreSQL")
 
 		catalogRepo = catalog.NewPostgresRepository(dbPool)
 		retailerRepo = database.NewRetailerRepo(dbPool)
 		sessionRepo = database.NewSessionRepo(dbPool)
 	} else {
-		slog.Warn("POSTGRES_URL not set, running without database")
+		slog.WarnContext(initCtx, "POSTGRES_URL not set, running without database")
 	}
 
 	// LLM providers and router
 	var potentProvider, economyProvider llm.Provider
 	switch cfg.LLMProvider {
 	case "mistral":
-		slog.Info("using Mistral LLM provider", "potent", cfg.MistralPotentModel, "economy", cfg.MistralEconomyModel, "api_key_len", len(cfg.MistralAPIKey), "api_key_prefix", cfg.MistralAPIKey[:min(4, len(cfg.MistralAPIKey))])
+		slog.InfoContext(initCtx, "using Mistral LLM provider", "potent", cfg.MistralPotentModel, "economy", cfg.MistralEconomyModel, "api_key_len", len(cfg.MistralAPIKey), "api_key_prefix", cfg.MistralAPIKey[:min(4, len(cfg.MistralAPIKey))])
 		potentProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralPotentModel)
 		economyProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralEconomyModel)
 	default: // "kimi"
-		slog.Info("using Kimi LLM provider", "potent", cfg.KimiPotentModel, "economy", cfg.KimiEconomyModel)
+		slog.InfoContext(initCtx, "using Kimi LLM provider", "potent", cfg.KimiPotentModel, "economy", cfg.KimiEconomyModel)
 		potentProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiPotentModel)
 		economyProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiEconomyModel)
 	}
@@ -79,9 +90,9 @@ func main() {
 	if cfg.QdrantURL != "" && cfg.OpenAIAPIKey != "" && catalogRepo != nil {
 		embedder := rag.NewOpenAIEmbedder(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
 		ragEngine = rag.NewQdrantEngine(cfg.QdrantURL, cfg.QdrantCollection, embedder, catalogRepo)
-		slog.Info("RAG engine initialized", "qdrant", cfg.QdrantURL, "model", cfg.EmbeddingModel)
+		slog.InfoContext(initCtx, "RAG engine initialized", "qdrant", cfg.QdrantURL, "model", cfg.EmbeddingModel)
 	} else {
-		slog.Warn("RAG engine disabled",
+		slog.WarnContext(initCtx, "RAG engine disabled",
 			"qdrant_url_set", cfg.QdrantURL != "",
 			"openai_key_set", cfg.OpenAIAPIKey != "",
 			"catalog_repo_set", catalogRepo != nil,
@@ -122,9 +133,9 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("starting server", "port", cfg.Port)
+		slog.InfoContext(initCtx, "starting server", "port", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server error", "error", err)
+			slog.ErrorContext(initCtx, "server error", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -133,11 +144,11 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	slog.Info("shutting down server")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	slog.InfoContext(initCtx, "shutting down server")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		slog.Error("server shutdown error", "error", err)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.ErrorContext(shutdownCtx, "server shutdown error", "error", err)
 	}
 }

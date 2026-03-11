@@ -97,7 +97,7 @@ func (d *DiscoveryManager) NextQuestion(ctx context.Context, analysis *OutfitAna
 	if len(raw.UpdatedFactMap) > 0 && string(raw.UpdatedFactMap) != "null" {
 		normalized, err := normalizeFactMapJSON(raw.UpdatedFactMap)
 		if err != nil {
-			slog.Warn("discovery: failed to normalize fact_map, using raw", "error", err)
+			slog.WarnContext(ctx, "discovery: failed to normalize fact_map, using raw", "error", err)
 			normalized = raw.UpdatedFactMap
 		}
 		var fm session.FactMap

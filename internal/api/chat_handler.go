@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
 
 	"stylerag/internal/rag"
@@ -17,6 +20,8 @@ import (
 	"stylerag/internal/storage"
 	"stylerag/internal/vision"
 )
+
+var chatTracer = otel.Tracer("stylerag/chat")
 
 // ChatDeps bundles dependencies for the chat handler.
 type ChatDeps struct {
@@ -109,13 +114,13 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "analysis timeout"})
 				return
 			}
-			slog.Error("chat: processing failed", "error", err, "session_id", sessionID, "phase", state.Phase)
+			slog.ErrorContext(ctx, "chat: processing failed", "error", err, "session_id", sessionID, "phase", state.Phase)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error", "detail": err.Error()})
 			return
 		}
 
 		if err := deps.Store.Save(state); err != nil {
-			slog.Error("chat: failed to save session", "error", err, "session_id", sessionID)
+			slog.ErrorContext(ctx, "chat: failed to save session", "error", err, "session_id", sessionID)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}
@@ -125,6 +130,9 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 }
 
 func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string) (*ChatResponse, error) {
+	ctx, span := chatTracer.Start(ctx, "chat.capture", trace.WithAttributes(attribute.String("session.id", sessionID)))
+	defer span.End()
+
 	start := time.Now()
 	prefix := fmt.Sprintf("sessions/%s/", sessionID)
 
@@ -143,13 +151,13 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	if err != nil {
 		return nil, fmt.Errorf("failed to download image: %w", err)
 	}
-	slog.Info("chat: image downloaded", "key", latestKey, "size_bytes", len(imageData), "elapsed", time.Since(start))
+	slog.InfoContext(ctx, "chat: image downloaded", "key", latestKey, "size_bytes", len(imageData), "elapsed", time.Since(start))
 
 	analysis, err := deps.Analyzer.AnalyzeOutfit(ctx, imageData)
 	if err != nil {
 		return nil, fmt.Errorf("outfit analysis failed: %w", err)
 	}
-	slog.Info("chat: outfit analysis done",
+	slog.InfoContext(ctx, "chat: outfit analysis done",
 		"session_id", sessionID,
 		"items_detected", len(analysis.DetectedItems),
 		"styles", analysis.DetectedStyles,
@@ -157,7 +165,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 		"overall_fit", analysis.OverallFit,
 		"elapsed", time.Since(start),
 	)
-	slog.Info("chat: outfit observations",
+	slog.InfoContext(ctx, "chat: outfit observations",
 		"session_id", sessionID,
 		"observations", analysis.Observations,
 	)
@@ -166,14 +174,14 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	hasColor := analysis.ColorAnalysis != nil
 	hasSilhouette := analysis.SilhouetteAnalysis != nil
 	hasArchetype := analysis.ArchetypeAnalysis != nil
-	slog.Info("chat: style theory fields",
+	slog.InfoContext(ctx, "chat: style theory fields",
 		"session_id", sessionID,
 		"has_color_analysis", hasColor,
 		"has_silhouette_analysis", hasSilhouette,
 		"has_archetype_analysis", hasArchetype,
 	)
 	if hasColor {
-		slog.Info("chat: color analysis",
+		slog.InfoContext(ctx, "chat: color analysis",
 			"session_id", sessionID,
 			"season", analysis.ColorAnalysis.EstimatedSeason,
 			"confidence", analysis.ColorAnalysis.Confidence,
@@ -183,7 +191,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 		)
 	}
 	if hasSilhouette {
-		slog.Info("chat: silhouette analysis",
+		slog.InfoContext(ctx, "chat: silhouette analysis",
 			"session_id", sessionID,
 			"kibbe_family", analysis.SilhouetteAnalysis.EstimatedKibbeFamily,
 			"confidence", analysis.SilhouetteAnalysis.Confidence,
@@ -193,7 +201,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 		)
 	}
 	if hasArchetype {
-		slog.Info("chat: archetype analysis",
+		slog.InfoContext(ctx, "chat: archetype analysis",
 			"session_id", sessionID,
 			"current", analysis.ArchetypeAnalysis.CurrentArchetype,
 			"secondary", analysis.ArchetypeAnalysis.SecondaryArchetype,
@@ -220,7 +228,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	prepopulateFactMap(state.FactMap, insights)
 
 	if analysis.ImageQuality != nil {
-		slog.Info("chat: image quality",
+		slog.InfoContext(ctx, "chat: image quality",
 			"session_id", sessionID,
 			"overall", analysis.ImageQuality.Overall,
 			"lighting", analysis.ImageQuality.Lighting,
@@ -230,7 +238,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 			"compensation_needed", len(insights.CompensationNeeded),
 		)
 	}
-	slog.Info("chat: image insights",
+	slog.InfoContext(ctx, "chat: image insights",
 		"session_id", sessionID,
 		"issues", len(insights.DetectedIssues),
 		"strengths", len(insights.DetectedStrengths),
@@ -263,7 +271,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	for i, o := range options {
 		optionLabels[i] = o.Label
 	}
-	slog.Info("chat: capture complete",
+	slog.InfoContext(ctx, "chat: capture complete",
 		"session_id", sessionID,
 		"bot_message", discovery.Message,
 		"input_mode", discovery.InputMode,
@@ -283,6 +291,9 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 }
 
 func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string, req *ChatRequest) (*ChatResponse, error) {
+	ctx, span := chatTracer.Start(ctx, "chat.discovery", trace.WithAttributes(attribute.String("session.id", sessionID)))
+	defer span.End()
+
 	// Record user response
 	userResp := session.UserResponse{
 		Timestamp: time.Now(),
@@ -296,7 +307,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 		userResp.Value = req.Transcript
 	}
 
-	slog.Info("chat: user input",
+	slog.InfoContext(ctx, "chat: user input",
 		"session_id", sessionID,
 		"turn", state.Turn+1,
 		"input_mode", userResp.InputMode,
@@ -323,10 +334,13 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 		return nil, fmt.Errorf("invalid outfit analysis in session state")
 	}
 
+	// ALWAYS extract facts from user input before any advance decision
+	vision.ExtractFactsFromInput(state.FactMap, userResp.Value)
+
 	// Pre-LLM guardrail: check if Go should force advance
 	forceResult := vision.ShouldForceAdvance(state, userResp.Value)
 	if forceResult.ShouldForce {
-		slog.Info("chat: Go forcing advance before LLM call",
+		slog.InfoContext(ctx, "chat: Go forcing advance after fact extraction",
 			"session_id", sessionID,
 			"turn", state.Turn,
 			"reason", forceResult.Reason,
@@ -337,7 +351,6 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 		transitionMsg := vision.PickTransitionMessage()
 		state.AssistantMessages = append(state.AssistantMessages, transitionMsg)
 
-		// Return transition message to the user, then proceed to diagnosis
 		return handleDiagnosisAndRecommendation(ctx, deps, state, sessionID, analysis)
 	}
 
@@ -362,7 +375,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	// Post-LLM guardrail: detect repeated questions
 	forcedByRepetition := false
 	if vision.IsSimilarQuestion(discovery.Message, state.LastBotMessage) {
-		slog.Warn("chat: repeated question detected, forcing advance",
+		slog.WarnContext(ctx, "chat: repeated question detected, forcing advance",
 			"session_id", sessionID,
 			"turn", state.Turn,
 			"current_msg", discovery.Message,
@@ -375,7 +388,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	state.AssistantMessages = append(state.AssistantMessages, discovery.Message)
 	state.LastBotMessage = discovery.Message
 
-	slog.Info("chat: discovery state",
+	slog.InfoContext(ctx, "chat: discovery state",
 		"session_id", sessionID,
 		"turn", state.Turn,
 		"bot_message", discovery.Message,
@@ -395,7 +408,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 
 	// Guardrail: if LLM says advance but also sends options → block
 	if shouldAdvance && len(discovery.Options) > 0 && !forcedByRepetition {
-		slog.Warn("chat: blocking premature advance — LLM sent advance=true with options",
+		slog.WarnContext(ctx, "chat: blocking premature advance — LLM sent advance=true with options",
 			"session_id", sessionID,
 			"turn", state.Turn,
 		)
@@ -405,7 +418,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	// Safety net: force advance at turn cap
 	forcedByCap := false
 	if state.Turn >= session.MaxAgenticTurns && !shouldAdvance {
-		slog.Warn("chat: forcing advance at turn cap",
+		slog.WarnContext(ctx, "chat: forcing advance at turn cap",
 			"session_id", sessionID,
 			"turn", state.Turn,
 		)
@@ -413,7 +426,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 		forcedByCap = true
 	}
 
-	slog.Info("chat: advance decision",
+	slog.InfoContext(ctx, "chat: advance decision",
 		"session_id", sessionID,
 		"turn", state.Turn,
 		"llm_wants_advance", discovery.AdvanceToDiagnosis,
@@ -434,7 +447,7 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	for i, o := range options {
 		discOptionLabels[i] = o.Label
 	}
-	slog.Info("chat: discovery options presented",
+	slog.InfoContext(ctx, "chat: discovery options presented",
 		"session_id", sessionID,
 		"turn", state.Turn,
 		"options", discOptionLabels,
@@ -452,6 +465,9 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 }
 
 func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string, analysis *vision.OutfitAnalysis) (*ChatResponse, error) {
+	ctx, span := chatTracer.Start(ctx, "chat.diagnosis_and_recommendation", trace.WithAttributes(attribute.String("session.id", sessionID)))
+	defer span.End()
+
 	start := time.Now()
 
 	// Bridge FactMap → Profile
@@ -482,7 +498,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 	}
 
 	// Log profile state going into diagnosis
-	slog.Info("chat: profile entering diagnosis",
+	slog.InfoContext(ctx, "chat: profile entering diagnosis",
 		"session_id", sessionID,
 		"color_season", profile.ColorSeason,
 		"color_conf", profile.ColorSeasonConf,
@@ -505,14 +521,14 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 
 	// Log diagnosis scoring results
 	p := &diagnosis.Profile
-	slog.Info("chat: diagnosis profile",
+	slog.InfoContext(ctx, "chat: diagnosis profile",
 		"session_id", sessionID,
 		"strengths", p.Strengths,
 		"gaps", p.Gaps,
 		"style_distance", p.StyleDistance,
 		"desired_archetype", p.DesiredArchetype,
 	)
-	slog.Info("chat: diagnosis scores",
+	slog.InfoContext(ctx, "chat: diagnosis scores",
 		"session_id", sessionID,
 		"color_harmony", p.Scores.ColorHarmony,
 		"fit", p.Scores.Fit,
@@ -525,7 +541,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 		"gap_count", len(p.GapAnalysis),
 	)
 	for i, g := range p.GapAnalysis {
-		slog.Info("chat: gap item",
+		slog.InfoContext(ctx, "chat: gap item",
 			"session_id", sessionID,
 			"index", i,
 			"dimension", g.Dimension,
@@ -536,7 +552,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 			"actionable", g.Actionable,
 		)
 	}
-	slog.Info("chat: diagnosis done", "session_id", sessionID, "elapsed", time.Since(start))
+	slog.InfoContext(ctx, "chat: diagnosis done", "session_id", sessionID, "elapsed", time.Since(start))
 
 	// Phase 3.5: RAG Search — find real products for top gaps
 	var gapProducts []vision.GapProductContext
@@ -551,7 +567,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 			g.Go(func() error {
 				prods, err := deps.RAGEngine.Search(gctx, q)
 				if err != nil {
-					slog.Warn("rag: search failed", "gap", q.Text, "error", err)
+					slog.WarnContext(gctx, "rag: search failed", "gap", q.Text, "error", err)
 					return nil // non-fatal
 				}
 				results[i] = prods
@@ -568,7 +584,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 				})
 			}
 		}
-		slog.Info("chat: RAG search done",
+		slog.InfoContext(ctx, "chat: RAG search done",
 			"session_id", sessionID,
 			"queries", len(queries),
 			"gaps_with_products", len(gapProducts),
@@ -584,14 +600,14 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 	}
 
 	// Log recommendation output
-	slog.Info("chat: recommendation done",
+	slog.InfoContext(ctx, "chat: recommendation done",
 		"session_id", sessionID,
 		"spoken_summary", advice.SpokenSummary,
 		"action_count", len(advice.PriorityActions),
 		"total_elapsed", time.Since(start),
 	)
 	for i, a := range advice.PriorityActions {
-		slog.Info("chat: priority action",
+		slog.InfoContext(ctx, "chat: priority action",
 			"session_id", sessionID,
 			"index", i,
 			"id", a.ID,
@@ -654,11 +670,9 @@ func prepopulateFactMap(fm *session.FactMap, insights *vision.ImageInsights) {
 				fmt.Sprintf("[detectado en foto] %s", issue.Observation))
 		}
 	}
-	if insights.InferredFacts.TooInformalFor != "" {
-		ctx := fmt.Sprintf("Outfit actual es demasiado casual para %s",
-			insights.InferredFacts.TooInformalFor)
-		fm.AdditionalContext = &ctx
-	}
+	// Note: TooInformalFor is NOT injected into the fact_map.
+	// It's available in the prompt as context, but the LLM should
+	// only use it if the user confirms the occasion.
 }
 
 // getPendingCompensations returns compensation areas not yet covered.

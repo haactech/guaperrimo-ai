@@ -61,7 +61,7 @@ func imageUploadHandler(store storage.ImageStore) http.HandlerFunc {
 			ContentType: contentType,
 		})
 		if err != nil {
-			slog.Error("image upload failed", "error", err, "session_id", sessionID)
+			slog.ErrorContext(r.Context(), "image upload failed", "error", err, "session_id", sessionID)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
 			return
 		}

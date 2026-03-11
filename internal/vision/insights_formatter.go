@@ -39,7 +39,7 @@ func FormatInsightsForPrompt(insights *ImageInsights) string {
 	}
 	sb.WriteString(fmt.Sprintf("- Fit necesita trabajo: %v\n", f.FitNeedsWork))
 	if f.TooInformalFor != "" {
-		sb.WriteString(fmt.Sprintf("- Outfit demasiado informal para: %s\n", f.TooInformalFor))
+		sb.WriteString(fmt.Sprintf("- Nota: este outfit NO sería apropiado para contextos como %s. Pero NO asumas que el usuario quiere usarlo para eso. Espera a que ÉL mencione la ocasión.\n", f.TooInformalFor))
 	}
 	if f.BodyTypeHint != "" {
 		sb.WriteString(fmt.Sprintf("- Recomendación de silueta: %s\n", f.BodyTypeHint))

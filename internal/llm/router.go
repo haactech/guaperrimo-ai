@@ -2,6 +2,11 @@ package llm
 
 import (
 	"context"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TurnType represents the type of conversation turn for routing decisions
@@ -39,9 +44,33 @@ func (r *Router) SelectProvider(turnType TurnType) Provider {
 	}
 }
 
+var tracer = otel.Tracer("stylerag/llm")
+
 func (r *Router) Complete(ctx context.Context, turnType TurnType, req CompletionRequest) (*CompletionResponse, error) {
+	tier := "potent"
 	provider := r.SelectProvider(turnType)
-	return provider.Complete(ctx, req)
+	if provider == r.economy {
+		tier = "economy"
+	}
+
+	ctx, span := tracer.Start(ctx, "llm.complete", trace.WithAttributes(
+		attribute.String("llm.turn_type", string(turnType)),
+		attribute.String("llm.model_tier", tier),
+	))
+	defer span.End()
+
+	resp, err := provider.Complete(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+
+	span.SetAttributes(
+		attribute.Int("llm.input_tokens", resp.Usage.InputTokens),
+		attribute.Int("llm.output_tokens", resp.Usage.OutputTokens),
+	)
+	return resp, nil
 }
 
 func (r *Router) StreamComplete(ctx context.Context, turnType TurnType, req CompletionRequest) (<-chan StreamChunk, error) {

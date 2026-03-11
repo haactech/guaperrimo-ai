@@ -9,6 +9,11 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // QdrantEngine implements Engine using Qdrant vector search + PostgreSQL hydration.
@@ -43,11 +48,23 @@ func (e *QdrantEngine) Search(ctx context.Context, query SearchQuery) ([]Product
 	return products, nil
 }
 
+var ragTracer = otel.Tracer("stylerag/rag")
+
 // SearchWithScores returns products with relevance scores.
 func (e *QdrantEngine) SearchWithScores(ctx context.Context, query SearchQuery) ([]SearchResult, error) {
+	ctx, span := ragTracer.Start(ctx, "rag.search", trace.WithAttributes(
+		attribute.String("rag.query_text", query.Text),
+		attribute.Int("rag.limit", query.Limit),
+	))
+	defer span.End()
+
 	// 1. Embed the query text
-	vector, err := e.embedder.EmbedText(ctx, query.Text)
+	embedCtx, embedSpan := ragTracer.Start(ctx, "rag.embed_query")
+	vector, err := e.embedder.EmbedText(embedCtx, query.Text)
+	embedSpan.End()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, fmt.Errorf("qdrant: embed query: %w", err)
 	}
 
@@ -111,9 +128,11 @@ func (e *QdrantEngine) SearchWithScores(ctx context.Context, query SearchQuery) 
 	}
 
 	// 4. Hydrate from PostgreSQL
-	products, err := e.hydrator.GetProducts(ctx, ids)
+	hydrateCtx, hydrateSpan := ragTracer.Start(ctx, "rag.hydrate_products")
+	products, err := e.hydrator.GetProducts(hydrateCtx, ids)
+	hydrateSpan.End()
 	if err != nil {
-		slog.Warn("qdrant: catalog hydration failed, returning IDs only", "error", err)
+		slog.WarnContext(ctx, "qdrant: catalog hydration failed, returning IDs only", "error", err)
 		// Return minimal results with just IDs and scores
 		results := make([]SearchResult, len(searchResp.Result))
 		for i, pt := range searchResp.Result {
@@ -122,6 +141,7 @@ func (e *QdrantEngine) SearchWithScores(ctx context.Context, query SearchQuery) 
 				Score:   pt.Score,
 			}
 		}
+		span.SetAttributes(attribute.Int("rag.results_count", len(results)))
 		return results, nil
 	}
 
@@ -141,6 +161,7 @@ func (e *QdrantEngine) SearchWithScores(ctx context.Context, query SearchQuery) 
 		}
 	}
 
+	span.SetAttributes(attribute.Int("rag.results_count", len(results)))
 	return results, nil
 }
 

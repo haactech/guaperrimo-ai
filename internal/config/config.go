@@ -44,6 +44,9 @@ type Config struct {
 	// Voice
 	AvalonAPIKey string
 
+	// Local image serving
+	ImageDir string
+
 	// Storage (Cloudflare R2)
 	R2AccountID       string
 	R2AccessKeyID     string
@@ -82,6 +85,8 @@ func Load() *Config {
 		LLMProvider: getEnv("LLM_PROVIDER", "mistral"),
 
 		AvalonAPIKey: getEnv("AVALON_API_KEY", ""),
+
+		ImageDir: getEnv("IMAGE_DIR", "data/fashion-dataset/images"),
 
 		R2AccountID:       getEnv("R2_ACCOUNT_ID", ""),
 		R2AccessKeyID:     getEnv("R2_ACCESS_KEY_ID", ""),
