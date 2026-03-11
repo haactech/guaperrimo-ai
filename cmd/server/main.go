@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"stylerag/internal/api"
+	"stylerag/internal/catalog"
 	"stylerag/internal/config"
+	"stylerag/internal/database"
 	"stylerag/internal/llm"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
@@ -29,6 +31,28 @@ func main() {
 	if err != nil {
 		slog.Error("failed to initialize R2 storage", "error", err)
 		os.Exit(1)
+	}
+
+	// PostgreSQL connection pool + repositories
+	var (
+		catalogRepo  *catalog.PostgresRepository
+		retailerRepo *database.RetailerRepo
+		sessionRepo  *database.SessionRepo
+	)
+	if cfg.PostgresURL != "" {
+		dbPool, err := database.NewPostgresPool(context.Background(), cfg.PostgresURL)
+		if err != nil {
+			slog.Error("failed to connect to PostgreSQL", "error", err)
+			os.Exit(1)
+		}
+		defer dbPool.Close()
+		slog.Info("connected to PostgreSQL")
+
+		catalogRepo = catalog.NewPostgresRepository(dbPool)
+		retailerRepo = database.NewRetailerRepo(dbPool)
+		sessionRepo = database.NewSessionRepo(dbPool)
+	} else {
+		slog.Warn("POSTGRES_URL not set, running without database")
 	}
 
 	// LLM providers and router
@@ -62,7 +86,16 @@ func main() {
 		Advisor:    advisor,
 	}
 
-	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps)
+	_ = retailerRepo // will be used for auth middleware
+	_ = sessionRepo  // will be used for analytics tracking
+
+	// Avoid typed-nil interface: a (*PostgresRepository)(nil) is not a nil catalog.Repository.
+	var catRepo catalog.Repository
+	if catalogRepo != nil {
+		catRepo = catalogRepo
+	}
+
+	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps, catRepo)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

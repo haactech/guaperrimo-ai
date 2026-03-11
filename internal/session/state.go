@@ -22,6 +22,7 @@ type SessionState struct {
 	AssistantMessages []string          `json:"assistant_messages"` // what the bot said each turn
 	CoveredFacts      map[string]string `json:"covered_facts"`     // category → summary of what we learned
 	Diagnosis         *StyleDiagnosis   `json:"diagnosis,omitempty"`
+	StyleProfile      *UserStyleProfile `json:"style_profile,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 	UpdatedAt         time.Time         `json:"updated_at"`
 }
@@ -59,32 +60,55 @@ type UserResponse struct {
 
 // StyleDiagnosis is the structured output of Phase 3 (diagnosis).
 type StyleDiagnosis struct {
-	CurrentAssessment CurrentAssessment `json:"current_assessment"`
-	UserProfile       UserProfile       `json:"user_profile"`
-	GapRanking        []GapRanking      `json:"gap_ranking"`
+	Profile UserStyleProfile `json:"profile"`
 }
 
-type CurrentAssessment struct {
-	Strengths    []string `json:"strengths"`
-	Gaps         []string `json:"gaps"`
-	StyleDistance string   `json:"style_distance"` // "baja", "media", "alta"
+// UserStyleProfile is the unified style evaluation across all phases.
+type UserStyleProfile struct {
+	// Identity — populated by Phase 1 (image analysis)
+	ColorSeason      string `json:"color_season"`
+	ColorSeasonConf  string `json:"color_season_conf"`
+	KibbeFamily      string `json:"kibbe_family"`
+	KibbeFamilyConf  string `json:"kibbe_family_conf"`
+	CurrentArchetype string `json:"current_archetype"`
+
+	// Context — populated by Phase 2 (discovery)
+	DesiredArchetype  string   `json:"desired_archetype"`
+	Occasion          string   `json:"occasion"`
+	DesiredProjection string   `json:"desired_projection"`
+	Approach          string   `json:"approach"`
+	PainPoints        []string `json:"pain_points"`
+	AspirationalRef   string   `json:"aspirational_ref"`
+	Constraints       []string `json:"constraints"`
+
+	// Evaluation — populated by Phase 3 (diagnosis)
+	Strengths    []string    `json:"strengths"`
+	Gaps         []string    `json:"gaps"`
+	StyleDistance string     `json:"style_distance"`
+	Scores       StyleScores `json:"scores"`
+	GapAnalysis  []GapItem   `json:"gap_analysis"`
+	OverallScore float64     `json:"overall_score"`
+	OverallGrade string      `json:"overall_grade"`
 }
 
-type UserProfile struct {
-	Occasion              string   `json:"occasion"`
-	DesiredProjection     string   `json:"desired_projection"`
-	Approach              string   `json:"approach"` // "refinar" | "explorar"
-	PainPoints            []string `json:"pain_points"`
-	AspirationalReference string   `json:"aspirational_reference"`
-	Constraints           []string `json:"constraints"`
+// StyleScores holds 6 evaluation dimensions, each scored 1-10.
+type StyleScores struct {
+	ColorHarmony   int `json:"color_harmony"`
+	Fit            int `json:"fit"`
+	Proportion     int `json:"proportion"`
+	LineHarmony    int `json:"line_harmony"`
+	StyleCoherence int `json:"style_coherence"`
+	OccasionMatch  int `json:"occasion_match"`
 }
 
-type GapRanking struct {
-	Area     string `json:"area"`
-	Priority int    `json:"priority"`
-	Current  int    `json:"current"` // 1-10
-	Target   int    `json:"target"`  // 1-10
-	Note     string `json:"note"`
+// GapItem represents a single dimension gap between current and target scores.
+type GapItem struct {
+	Dimension  string `json:"dimension"`
+	Current    int    `json:"current"`
+	Target     int    `json:"target"`
+	Gap        int    `json:"gap"`
+	Priority   int    `json:"priority"`
+	Actionable string `json:"actionable"`
 }
 
 // PersonalizedAdvice is the output of Phase 4 (recommendation).

@@ -61,13 +61,13 @@ func (a *StyleAdvisor) GenerateStyleAdvice(ctx context.Context, analysis *Outfit
 	return &advice, nil
 }
 
-func (a *StyleAdvisor) GenerateRecommendation(ctx context.Context, diagnosis *session.StyleDiagnosis) (*session.PersonalizedAdvice, error) {
-	diagnosisJSON, err := json.Marshal(diagnosis)
+func (a *StyleAdvisor) GenerateRecommendation(ctx context.Context, profile *session.UserStyleProfile) (*session.PersonalizedAdvice, error) {
+	profileJSON, err := json.Marshal(profile)
 	if err != nil {
-		return nil, fmt.Errorf("recommendation: marshal diagnosis: %w", err)
+		return nil, fmt.Errorf("recommendation: marshal profile: %w", err)
 	}
 
-	prompt := fmt.Sprintf(recommendationPrompt, string(diagnosisJSON))
+	prompt := fmt.Sprintf(advisorPromptWithTheory, string(profileJSON))
 
 	req := llm.CompletionRequest{
 		Messages: []llm.Message{

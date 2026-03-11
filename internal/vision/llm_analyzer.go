@@ -33,12 +33,12 @@ func (a *LLMAnalyzer) AnalyzeOutfit(ctx context.Context, imageData []byte) (*Out
 			{
 				Role: llm.RoleUser,
 				ContentBlocks: []llm.ContentBlock{
-					{Type: "text", Text: outfitAnalysisPrompt},
+					{Type: "text", Text: buildOutfitAnalysisPrompt()},
 					{Type: "image_url", ImageURL: dataURI},
 				},
 			},
 		},
-		MaxTokens:      4096,
+		MaxTokens:      8192,
 		Temperature:    0.1,
 		ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
 	}

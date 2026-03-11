@@ -144,9 +144,70 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	if err != nil {
 		return nil, fmt.Errorf("outfit analysis failed: %w", err)
 	}
-	slog.Info("chat: outfit analysis done", "elapsed", time.Since(start))
+	slog.Info("chat: outfit analysis done",
+		"session_id", sessionID,
+		"items_detected", len(analysis.DetectedItems),
+		"styles", analysis.DetectedStyles,
+		"colors", analysis.DetectedColors,
+		"overall_fit", analysis.OverallFit,
+		"elapsed", time.Since(start),
+	)
+	slog.Info("chat: outfit observations",
+		"session_id", sessionID,
+		"observations", analysis.Observations,
+	)
+
+	// Log whether the LLM produced the new style theory fields
+	hasColor := analysis.ColorAnalysis != nil
+	hasSilhouette := analysis.SilhouetteAnalysis != nil
+	hasArchetype := analysis.ArchetypeAnalysis != nil
+	slog.Info("chat: style theory fields",
+		"session_id", sessionID,
+		"has_color_analysis", hasColor,
+		"has_silhouette_analysis", hasSilhouette,
+		"has_archetype_analysis", hasArchetype,
+	)
+	if hasColor {
+		slog.Info("chat: color analysis",
+			"session_id", sessionID,
+			"season", analysis.ColorAnalysis.EstimatedSeason,
+			"confidence", analysis.ColorAnalysis.Confidence,
+			"harmony_score", analysis.ColorAnalysis.ColorHarmonyScore,
+			"harmonious_pieces", analysis.ColorAnalysis.HarmoniousPieces,
+			"conflicting_pieces", analysis.ColorAnalysis.ConflictingPieces,
+		)
+	}
+	if hasSilhouette {
+		slog.Info("chat: silhouette analysis",
+			"session_id", sessionID,
+			"kibbe_family", analysis.SilhouetteAnalysis.EstimatedKibbeFamily,
+			"confidence", analysis.SilhouetteAnalysis.Confidence,
+			"fit_score", analysis.SilhouetteAnalysis.FitScore,
+			"proportion_score", analysis.SilhouetteAnalysis.ProportionScore,
+			"line_harmony_score", analysis.SilhouetteAnalysis.LineHarmonyScore,
+		)
+	}
+	if hasArchetype {
+		slog.Info("chat: archetype analysis",
+			"session_id", sessionID,
+			"current", analysis.ArchetypeAnalysis.CurrentArchetype,
+			"secondary", analysis.ArchetypeAnalysis.SecondaryArchetype,
+		)
+	}
 
 	state.OutfitAnalysis = analysis
+	state.StyleProfile = &session.UserStyleProfile{}
+	if hasColor {
+		state.StyleProfile.ColorSeason = analysis.ColorAnalysis.EstimatedSeason
+		state.StyleProfile.ColorSeasonConf = analysis.ColorAnalysis.Confidence
+	}
+	if hasSilhouette {
+		state.StyleProfile.KibbeFamily = analysis.SilhouetteAnalysis.EstimatedKibbeFamily
+		state.StyleProfile.KibbeFamilyConf = analysis.SilhouetteAnalysis.Confidence
+	}
+	if hasArchetype {
+		state.StyleProfile.CurrentArchetype = analysis.ArchetypeAnalysis.CurrentArchetype
+	}
 	state.Turn = 1
 	state.Phase = session.PhaseDiscovery
 
@@ -162,7 +223,17 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 		options[i] = ChatOption{ID: opt.ID, Label: opt.Label}
 	}
 
-	slog.Info("chat: capture complete", "session_id", sessionID, "total_elapsed", time.Since(start))
+	optionLabels := make([]string, len(options))
+	for i, o := range options {
+		optionLabels[i] = o.Label
+	}
+	slog.Info("chat: capture complete",
+		"session_id", sessionID,
+		"bot_message", discovery.Message,
+		"input_mode", discovery.InputMode,
+		"options", optionLabels,
+		"total_elapsed", time.Since(start),
+	)
 
 	return &ChatResponse{
 		SessionID: sessionID,
@@ -188,6 +259,13 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 		userResp.InputMode = "voice"
 		userResp.Value = req.Transcript
 	}
+
+	slog.Info("chat: user input",
+		"session_id", sessionID,
+		"turn", state.Turn+1,
+		"input_mode", userResp.InputMode,
+		"value", userResp.Value,
+	)
 
 	state.Responses = append(state.Responses, userResp)
 	state.Turn++
@@ -215,12 +293,25 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	slog.Info("chat: discovery turn",
 		"session_id", sessionID,
 		"turn", state.Turn,
-		"covered_facts", state.CoveredFacts,
+		"bot_message", discovery.Message,
+		"input_mode", discovery.InputMode,
+		"reasoning", discovery.Reasoning,
 		"new_facts", discovery.ExtractedFacts,
+		"covered_facts", state.CoveredFacts,
+		"facts_count", len(state.CoveredFacts),
 	)
 
 	// Deterministic exit: backend decides when we have enough info
-	shouldAdvance := state.ReadyForDiagnosis() || state.Turn >= session.MaxDiscoveryTurns
+	readyForDiag := state.ReadyForDiagnosis()
+	maxTurnsReached := state.Turn >= session.MaxDiscoveryTurns
+	shouldAdvance := readyForDiag || maxTurnsReached
+	slog.Info("chat: advance decision",
+		"session_id", sessionID,
+		"turn", state.Turn,
+		"ready_for_diagnosis", readyForDiag,
+		"max_turns_reached", maxTurnsReached,
+		"advancing", shouldAdvance,
+	)
 	if shouldAdvance {
 		return handleDiagnosisAndRecommendation(ctx, deps, state, sessionID, analysis)
 	}
@@ -229,6 +320,15 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	for i, opt := range discovery.Options {
 		options[i] = ChatOption{ID: opt.ID, Label: opt.Label}
 	}
+	discOptionLabels := make([]string, len(options))
+	for i, o := range options {
+		discOptionLabels[i] = o.Label
+	}
+	slog.Info("chat: discovery options presented",
+		"session_id", sessionID,
+		"turn", state.Turn,
+		"options", discOptionLabels,
+	)
 
 	return &ChatResponse{
 		SessionID: sessionID,
@@ -244,22 +344,112 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string, analysis *vision.OutfitAnalysis) (*ChatResponse, error) {
 	start := time.Now()
 
+	// Populate context fields from discovery facts into the profile
+	profile := state.StyleProfile
+	if profile == nil {
+		profile = &session.UserStyleProfile{}
+	}
+	if v, ok := state.CoveredFacts["occasion"]; ok {
+		profile.Occasion = v
+	}
+	if v, ok := state.CoveredFacts["intention"]; ok {
+		profile.DesiredProjection = v
+	}
+	if v, ok := state.CoveredFacts["exploration"]; ok {
+		profile.Approach = v
+	}
+	if v, ok := state.CoveredFacts["pain_points"]; ok {
+		profile.PainPoints = []string{v}
+	}
+	if v, ok := state.CoveredFacts["aspirational"]; ok {
+		profile.AspirationalRef = v
+	}
+	if v, ok := state.CoveredFacts["constraints"]; ok {
+		profile.Constraints = []string{v}
+	}
+
+	// Log profile state going into diagnosis
+	slog.Info("chat: profile entering diagnosis",
+		"session_id", sessionID,
+		"color_season", profile.ColorSeason,
+		"color_conf", profile.ColorSeasonConf,
+		"kibbe", profile.KibbeFamily,
+		"kibbe_conf", profile.KibbeFamilyConf,
+		"archetype", profile.CurrentArchetype,
+		"occasion", profile.Occasion,
+		"desired_projection", profile.DesiredProjection,
+		"approach", profile.Approach,
+	)
+
 	// Phase 3: Diagnosis
 	state.Phase = session.PhaseDiagnosis
-	diagnosis, err := deps.Diagnosis.Generate(ctx, analysis, state.Responses)
+	diagnosis, err := deps.Diagnosis.Generate(ctx, analysis, state.Responses, profile)
 	if err != nil {
 		return nil, fmt.Errorf("diagnosis failed: %w", err)
 	}
 	state.Diagnosis = diagnosis
+	state.StyleProfile = &diagnosis.Profile
+
+	// Log diagnosis scoring results
+	p := &diagnosis.Profile
+	slog.Info("chat: diagnosis profile",
+		"session_id", sessionID,
+		"strengths", p.Strengths,
+		"gaps", p.Gaps,
+		"style_distance", p.StyleDistance,
+		"desired_archetype", p.DesiredArchetype,
+	)
+	slog.Info("chat: diagnosis scores",
+		"session_id", sessionID,
+		"color_harmony", p.Scores.ColorHarmony,
+		"fit", p.Scores.Fit,
+		"proportion", p.Scores.Proportion,
+		"line_harmony", p.Scores.LineHarmony,
+		"style_coherence", p.Scores.StyleCoherence,
+		"occasion_match", p.Scores.OccasionMatch,
+		"overall_score", fmt.Sprintf("%.2f", p.OverallScore),
+		"overall_grade", p.OverallGrade,
+		"gap_count", len(p.GapAnalysis),
+	)
+	for i, g := range p.GapAnalysis {
+		slog.Info("chat: gap item",
+			"session_id", sessionID,
+			"index", i,
+			"dimension", g.Dimension,
+			"current", g.Current,
+			"target", g.Target,
+			"gap", g.Gap,
+			"priority", g.Priority,
+			"actionable", g.Actionable,
+		)
+	}
 	slog.Info("chat: diagnosis done", "session_id", sessionID, "elapsed", time.Since(start))
 
 	// Phase 4: Recommendation
 	state.Phase = session.PhaseRecommendation
-	advice, err := deps.Advisor.GenerateRecommendation(ctx, diagnosis)
+	advice, err := deps.Advisor.GenerateRecommendation(ctx, state.StyleProfile)
 	if err != nil {
 		return nil, fmt.Errorf("recommendation failed: %w", err)
 	}
-	slog.Info("chat: recommendation done", "session_id", sessionID, "total_elapsed", time.Since(start))
+
+	// Log recommendation output
+	slog.Info("chat: recommendation done",
+		"session_id", sessionID,
+		"spoken_summary", advice.SpokenSummary,
+		"action_count", len(advice.PriorityActions),
+		"total_elapsed", time.Since(start),
+	)
+	for i, a := range advice.PriorityActions {
+		slog.Info("chat: priority action",
+			"session_id", sessionID,
+			"index", i,
+			"id", a.ID,
+			"title", a.Title,
+			"impact", a.Impact,
+			"effort", a.Effort,
+			"description", a.Description,
+		)
+	}
 
 	actions := make([]PriorityActionResponse, len(advice.PriorityActions))
 	for i, a := range advice.PriorityActions {

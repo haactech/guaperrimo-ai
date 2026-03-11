@@ -3,12 +3,13 @@ package api
 import (
 	"net/http"
 
+	"stylerag/internal/catalog"
 	"stylerag/internal/config"
 	"stylerag/internal/storage"
 	"stylerag/internal/vision"
 )
 
-func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps) http.Handler {
+func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps, catalogRepo catalog.Repository) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
@@ -19,6 +20,13 @@ func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer visio
 
 	if chatDeps != nil {
 		mux.HandleFunc("POST /session/{id}/chat", chatHandler(chatDeps))
+	}
+
+	if catalogRepo != nil {
+		mux.HandleFunc("GET /products", listProductsHandler(catalogRepo))
+		mux.HandleFunc("GET /products/categories", listCategoriesHandler(catalogRepo))
+		mux.HandleFunc("GET /products/{id}", getProductHandler(catalogRepo))
+		mux.HandleFunc("POST /products/batch", batchGetProductsHandler(catalogRepo))
 	}
 
 	return mux

@@ -1,5 +1,10 @@
 package api
 
+import (
+	"stylerag/internal/catalog"
+	"stylerag/internal/rag"
+)
+
 // StyleAnalysisResponse matches the iOS StyleAnalysis Codable struct.
 type StyleAnalysisResponse struct {
 	Message  string                `json:"message"`
@@ -47,4 +52,29 @@ type PriorityActionResponse struct {
 	Description string `json:"description"`
 	Impact      string `json:"impact"`
 	Effort      string `json:"effort"`
+}
+
+// --- Catalog DTOs ---
+
+// ProductListResponse is the response for GET /products.
+type ProductListResponse struct {
+	Products []rag.Product `json:"products"`
+	Total    int           `json:"total"`
+	Offset   int           `json:"offset"`
+	Limit    int           `json:"limit"`
+}
+
+// BatchGetRequest is the body for POST /products/batch.
+type BatchGetRequest struct {
+	IDs []string `json:"ids"`
+}
+
+// BatchGetResponse is the response for POST /products/batch.
+type BatchGetResponse struct {
+	Products []rag.Product `json:"products"`
+}
+
+// CategoriesResponse is the response for GET /products/categories.
+type CategoriesResponse struct {
+	Categories []catalog.CategoryCount `json:"categories"`
 }
