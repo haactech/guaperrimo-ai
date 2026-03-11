@@ -14,6 +14,7 @@ import (
 	"stylerag/internal/config"
 	"stylerag/internal/database"
 	"stylerag/internal/llm"
+	"stylerag/internal/rag"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/vision"
@@ -73,6 +74,20 @@ func main() {
 	analyzer := vision.NewLLMAnalyzer(llmRouter)
 	advisor := vision.NewStyleAdvisor(llmRouter)
 
+	// RAG engine (optional — degrades gracefully if not configured)
+	var ragEngine rag.Engine
+	if cfg.QdrantURL != "" && cfg.OpenAIAPIKey != "" && catalogRepo != nil {
+		embedder := rag.NewOpenAIEmbedder(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+		ragEngine = rag.NewQdrantEngine(cfg.QdrantURL, cfg.QdrantCollection, embedder, catalogRepo)
+		slog.Info("RAG engine initialized", "qdrant", cfg.QdrantURL, "model", cfg.EmbeddingModel)
+	} else {
+		slog.Warn("RAG engine disabled",
+			"qdrant_url_set", cfg.QdrantURL != "",
+			"openai_key_set", cfg.OpenAIAPIKey != "",
+			"catalog_repo_set", catalogRepo != nil,
+		)
+	}
+
 	// Conversational advisor dependencies
 	sessionStore := session.NewInMemoryStore(30 * time.Minute)
 	discovery := vision.NewDiscoveryManager(llmRouter)
@@ -84,6 +99,7 @@ func main() {
 		Discovery:  discovery,
 		Diagnosis:  diagnosis,
 		Advisor:    advisor,
+		RAGEngine:  ragEngine,
 	}
 
 	_ = retailerRepo // will be used for auth middleware

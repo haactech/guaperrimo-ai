@@ -16,6 +16,9 @@ type OutfitAnalysis struct {
 	ColorAnalysis      *ColorAnalysis      `json:"color_analysis,omitempty"`
 	SilhouetteAnalysis *SilhouetteAnalysis `json:"silhouette_analysis,omitempty"`
 	ArchetypeAnalysis  *ArchetypeAnalysis  `json:"archetype_analysis,omitempty"`
+
+	// Image quality assessment
+	ImageQuality *ImageQuality `json:"image_quality,omitempty"`
 }
 
 // DetectedItem represents a single clothing item detected in the image

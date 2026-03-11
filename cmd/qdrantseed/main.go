@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -16,15 +17,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"stylerag/internal/rag"
 )
 
 type options struct {
-	input      string
-	qdrantURL  string
-	collection string
-	vectorSize int
-	batchSize  int
-	recreate   bool
+	input          string
+	qdrantURL      string
+	collection     string
+	vectorSize     int
+	batchSize      int
+	recreate       bool
+	openaiAPIKey   string
+	embeddingModel string
+	fakeVectors    bool
+	embedBatchSize int
 }
 
 type point struct {
@@ -45,9 +52,13 @@ func parseFlags() options {
 	flag.StringVar(&opts.input, "input", "", "Path to normalized products CSV")
 	flag.StringVar(&opts.qdrantURL, "qdrant-url", "http://localhost:6333", "Qdrant base URL")
 	flag.StringVar(&opts.collection, "collection", "products", "Qdrant collection name")
-	flag.IntVar(&opts.vectorSize, "vector-size", 64, "Vector size for deterministic embeddings")
+	flag.IntVar(&opts.vectorSize, "vector-size", 1536, "Vector size for embeddings")
 	flag.IntVar(&opts.batchSize, "batch-size", 256, "Batch size for upsert")
 	flag.BoolVar(&opts.recreate, "recreate", false, "Drop collection before seeding")
+	flag.StringVar(&opts.openaiAPIKey, "openai-api-key", "", "OpenAI API key (env: OPENAI_API_KEY)")
+	flag.StringVar(&opts.embeddingModel, "embedding-model", "text-embedding-3-small", "OpenAI embedding model")
+	flag.BoolVar(&opts.fakeVectors, "fake-vectors", false, "Use deterministic fake vectors instead of OpenAI")
+	flag.IntVar(&opts.embedBatchSize, "embed-batch-size", 50, "Texts per OpenAI embedding request")
 	flag.Parse()
 
 	if opts.input == "" {
@@ -59,11 +70,30 @@ func parseFlags() options {
 	if opts.batchSize <= 0 {
 		log.Fatal("--batch-size debe ser > 0")
 	}
+
+	// Fallback to env var
+	if opts.openaiAPIKey == "" {
+		opts.openaiAPIKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	// If no API key, force fake vectors
+	if opts.openaiAPIKey == "" && !opts.fakeVectors {
+		log.Println("WARN: no OpenAI API key provided, falling back to --fake-vectors")
+		opts.fakeVectors = true
+	}
+
 	return opts
 }
 
+// row holds parsed CSV data for a single product
+type row struct {
+	id        string
+	payload   map[string]any
+	embedText string
+}
+
 func run(opts options) error {
-	client := &http.Client{Timeout: 20 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second}
 	baseURL := strings.TrimRight(opts.qdrantURL, "/")
 
 	if opts.recreate {
@@ -76,17 +106,26 @@ func run(opts options) error {
 		return err
 	}
 
+	// Set up embedder
+	var embedder *rag.OpenAIEmbedder
+	if !opts.fakeVectors {
+		embedder = rag.NewOpenAIEmbedder(opts.openaiAPIKey, opts.embeddingModel)
+		log.Printf("using OpenAI embeddings: model=%s, batch_size=%d", opts.embeddingModel, opts.embedBatchSize)
+	} else {
+		log.Printf("using fake deterministic vectors: size=%d", opts.vectorSize)
+	}
+
 	input, err := os.Open(opts.input)
 	if err != nil {
 		return fmt.Errorf("open input: %w", err)
 	}
 	defer input.Close()
 
-	r := csv.NewReader(input)
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
+	csvr := csv.NewReader(input)
+	csvr.FieldsPerRecord = -1
+	csvr.LazyQuotes = true
 
-	headers, err := r.Read()
+	headers, err := csvr.Read()
 	if err != nil {
 		return fmt.Errorf("read headers: %w", err)
 	}
@@ -103,11 +142,10 @@ func run(opts options) error {
 		}
 	}
 
-	batch := make([]point, 0, opts.batchSize)
-	total := 0
-
+	// Read all rows first
+	var rows []row
 	for {
-		rec, err := r.Read()
+		rec, err := csvr.Read()
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -122,7 +160,6 @@ func run(opts options) error {
 
 		styleTags := parsePGArray(get(rec, idx, "style_tags"))
 		colors := parsePGArray(get(rec, idx, "colors"))
-
 		price := parseNullableFloat(get(rec, idx, "price"))
 
 		payload := map[string]any{
@@ -139,7 +176,7 @@ func run(opts options) error {
 			payload["price"] = *price
 		}
 
-		vectorText := strings.Join([]string{
+		embedText := strings.Join([]string{
 			get(rec, idx, "name"),
 			get(rec, idx, "description"),
 			get(rec, idx, "category"),
@@ -148,29 +185,105 @@ func run(opts options) error {
 			strings.Join(colors, " "),
 		}, " ")
 
-		batch = append(batch, point{
-			ID:      id,
-			Vector:  deterministicVector(vectorText, opts.vectorSize),
-			Payload: payload,
-		})
-		total++
-
-		if len(batch) >= opts.batchSize {
-			if err := upsertPoints(client, baseURL, opts.collection, batch); err != nil {
-				return err
-			}
-			batch = batch[:0]
-		}
+		rows = append(rows, row{id: id, payload: payload, embedText: embedText})
 	}
 
-	if len(batch) > 0 {
-		if err := upsertPoints(client, baseURL, opts.collection, batch); err != nil {
+	log.Printf("parsed %d rows from CSV", len(rows))
+
+	// Process in upsert batches
+	total := 0
+	for batchStart := 0; batchStart < len(rows); batchStart += opts.batchSize {
+		batchEnd := batchStart + opts.batchSize
+		if batchEnd > len(rows) {
+			batchEnd = len(rows)
+		}
+		batchRows := rows[batchStart:batchEnd]
+
+		var points []point
+
+		if opts.fakeVectors {
+			// Fake vectors — no API call
+			for _, r := range batchRows {
+				points = append(points, point{
+					ID:      r.id,
+					Vector:  deterministicVector(r.embedText, opts.vectorSize),
+					Payload: r.payload,
+				})
+			}
+		} else {
+			// Real embeddings — batch calls to OpenAI
+			texts := make([]string, len(batchRows))
+			for i, r := range batchRows {
+				texts[i] = r.embedText
+			}
+
+			embeddings, err := embedBatchWithRetry(embedder, texts, opts.embedBatchSize)
+			if err != nil {
+				return fmt.Errorf("embed batch at offset %d: %w", batchStart, err)
+			}
+
+			for i, r := range batchRows {
+				vec := make([]float64, len(embeddings[i]))
+				for j, v := range embeddings[i] {
+					vec[j] = float64(v)
+				}
+				points = append(points, point{
+					ID:      r.id,
+					Vector:  vec,
+					Payload: r.payload,
+				})
+			}
+		}
+
+		if err := upsertPoints(client, baseURL, opts.collection, points); err != nil {
 			return err
 		}
+		total += len(points)
+		log.Printf("upserted %d/%d", total, len(rows))
 	}
 
 	log.Printf("qdrantseed completado: %d productos en collection %q", total, opts.collection)
 	return nil
+}
+
+// embedBatchWithRetry embeds texts in sub-batches with exponential backoff on 429.
+func embedBatchWithRetry(embedder *rag.OpenAIEmbedder, texts []string, batchSize int) ([][]float32, error) {
+	ctx := context.Background()
+	allEmbeddings := make([][]float32, len(texts))
+
+	for i := 0; i < len(texts); i += batchSize {
+		end := i + batchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		chunk := texts[i:end]
+
+		var vecs [][]float32
+		var err error
+
+		// Retry with exponential backoff
+		for attempt := 0; attempt < 5; attempt++ {
+			vecs, err = embedder.EmbedBatch(ctx, chunk)
+			if err == nil {
+				break
+			}
+			if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "rate") {
+				wait := time.Duration(1<<uint(attempt)) * time.Second
+				log.Printf("rate limited, waiting %v (attempt %d/5)", wait, attempt+1)
+				time.Sleep(wait)
+				continue
+			}
+			return nil, err
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed after retries: %w", err)
+		}
+
+		copy(allEmbeddings[i:end], vecs)
+		log.Printf("embedded %d/%d texts", end, len(texts))
+	}
+
+	return allEmbeddings, nil
 }
 
 func get(rec []string, idx map[string]int, key string) string {
@@ -288,7 +401,6 @@ func ensureCollection(client *http.Client, baseURL, name string, vectorSize int)
 		return nil
 	}
 	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusConflict {
-		// Collection may already exist; treat as non-fatal.
 		return nil
 	}
 

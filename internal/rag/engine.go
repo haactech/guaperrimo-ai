@@ -56,3 +56,9 @@ type Embedder interface {
 	EmbedText(ctx context.Context, text string) ([]float32, error)
 	EmbedImage(ctx context.Context, imageData []byte) ([]float32, error)
 }
+
+// ProductHydrator fetches full product data from the catalog store.
+// Implemented by catalog.PostgresRepository to break the import cycle.
+type ProductHydrator interface {
+	GetProducts(ctx context.Context, ids []string) ([]Product, error)
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -19,6 +20,13 @@ type Config struct {
 	// LLM Providers
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
+
+	// Embeddings (OpenAI)
+	EmbeddingModel string
+	EmbeddingDims  int
+
+	// Qdrant
+	QdrantCollection string
 
 	// Mistral
 	MistralAPIKey       string
@@ -59,6 +67,10 @@ func Load() *Config {
 		AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
 		OpenAIAPIKey:    getEnv("OPENAI_API_KEY", ""),
 
+		EmbeddingModel:   getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingDims:    getEnvInt("OPENAI_EMBEDDING_DIMS", 1536),
+		QdrantCollection: getEnv("QDRANT_COLLECTION", "products"),
+
 		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
 		MistralPotentModel:  getEnv("MISTRAL_POTENT_MODEL", "mistral-large-latest"),
 		MistralEconomyModel: getEnv("MISTRAL_ECONOMY_MODEL", "mistral-small-latest"),
@@ -84,6 +96,18 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 func parseLogLevel(level string) slog.Level {

@@ -7,8 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"stylerag/internal/rag"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/vision"
@@ -22,6 +26,7 @@ type ChatDeps struct {
 	Discovery  *vision.DiscoveryManager
 	Diagnosis  *vision.DiagnosisGenerator
 	Advisor    *vision.StyleAdvisor
+	RAGEngine  rag.Engine // nil = RAG disabled
 }
 
 func chatHandler(deps *ChatDeps) http.HandlerFunc {
@@ -67,13 +72,13 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 				return
 			}
 			state = &session.SessionState{
-				ID:           sessionID,
-				Phase:        session.PhaseCapture,
-				Turn:         0,
-				Responses:    []session.UserResponse{},
-				CoveredFacts: map[string]string{},
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
+				ID:        sessionID,
+				Phase:     session.PhaseCapture,
+				Turn:      0,
+				Responses: []session.UserResponse{},
+				FactMap:   &session.FactMap{},
+				CreatedAt: time.Now(),
+				UpdatedAt: time.Now(),
 			}
 		}
 
@@ -208,14 +213,45 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 	if hasArchetype {
 		state.StyleProfile.CurrentArchetype = analysis.ArchetypeAnalysis.CurrentArchetype
 	}
+
+	// Generate image insights and pre-populate fact_map
+	insights := vision.GenerateInsights(analysis)
+	state.ImageInsights = insights
+	prepopulateFactMap(state.FactMap, insights)
+
+	if analysis.ImageQuality != nil {
+		slog.Info("chat: image quality",
+			"session_id", sessionID,
+			"overall", analysis.ImageQuality.Overall,
+			"lighting", analysis.ImageQuality.Lighting,
+			"body_coverage", analysis.ImageQuality.BodyCoverage,
+			"focus", analysis.ImageQuality.Focus,
+			"blind_spots", analysis.ImageQuality.BlindSpots,
+			"compensation_needed", len(insights.CompensationNeeded),
+		)
+	}
+	slog.Info("chat: image insights",
+		"session_id", sessionID,
+		"issues", len(insights.DetectedIssues),
+		"strengths", len(insights.DetectedStrengths),
+		"high_severity", insights.HighSeverityCount(),
+		"color_needs_work", insights.InferredFacts.ColorNeedsWork,
+		"fit_needs_work", insights.InferredFacts.FitNeedsWork,
+		"too_informal_for", insights.InferredFacts.TooInformalFor,
+	)
+
 	state.Turn = 1
 	state.Phase = session.PhaseDiscovery
 
-	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, state.CoveredFacts)
+	pendingCompensations := getPendingCompensations(state, insights)
+	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.FactMap, insights, pendingCompensations)
 	if err != nil {
 		return nil, fmt.Errorf("first discovery question failed: %w", err)
 	}
 
+	if discovery.UpdatedFactMap != nil {
+		state.FactMap = discovery.UpdatedFactMap
+	}
 	state.AssistantMessages = append(state.AssistantMessages, discovery.Message)
 
 	options := make([]ChatOption, len(discovery.Options))
@@ -270,48 +306,122 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 	state.Responses = append(state.Responses, userResp)
 	state.Turn++
 
+	// Update conversation metrics
+	wordCount := len(strings.Fields(userResp.Value))
+	state.Metrics.LastResponseWordCount = wordCount
+	if wordCount < 5 {
+		state.Metrics.ConsecutiveShortResponses++
+	} else {
+		state.Metrics.ConsecutiveShortResponses = 0
+	}
+	if vision.ContainsExitSignal(userResp.Value) {
+		state.Metrics.ExitSignalCount++
+	}
+
 	analysis, ok := state.OutfitAnalysis.(*vision.OutfitAnalysis)
 	if !ok {
 		return nil, fmt.Errorf("invalid outfit analysis in session state")
 	}
 
+	// Pre-LLM guardrail: check if Go should force advance
+	forceResult := vision.ShouldForceAdvance(state, userResp.Value)
+	if forceResult.ShouldForce {
+		slog.Info("chat: Go forcing advance before LLM call",
+			"session_id", sessionID,
+			"turn", state.Turn,
+			"reason", forceResult.Reason,
+			"exit_signals", state.Metrics.ExitSignalCount,
+			"consecutive_short", state.Metrics.ConsecutiveShortResponses,
+			"facts_covered", session.CountCoveredFacts(state.FactMap),
+		)
+		transitionMsg := vision.PickTransitionMessage()
+		state.AssistantMessages = append(state.AssistantMessages, transitionMsg)
+
+		// Return transition message to the user, then proceed to diagnosis
+		return handleDiagnosisAndRecommendation(ctx, deps, state, sessionID, analysis)
+	}
+
+	// Recover insights for discovery prompt
+	var insights *vision.ImageInsights
+	if ins, ok := state.ImageInsights.(*vision.ImageInsights); ok {
+		insights = ins
+	}
+	pendingCompensations := getPendingCompensations(state, insights)
+
 	// Ask the LLM for the next question + extract facts from the user's latest answer
-	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.Turn, state.CoveredFacts)
+	discovery, err := deps.Discovery.NextQuestion(ctx, analysis, state.Responses, state.AssistantMessages, state.FactMap, insights, pendingCompensations)
 	if err != nil {
 		return nil, fmt.Errorf("discovery question failed: %w", err)
 	}
 
-	state.AssistantMessages = append(state.AssistantMessages, discovery.Message)
-
-	// Accumulate extracted facts into session state
-	for cat, fact := range discovery.ExtractedFacts {
-		if fact != "" {
-			state.CoveredFacts[cat] = fact
-		}
+	// FactMap: wholesale replacement (LLM returns the complete map)
+	if discovery.UpdatedFactMap != nil {
+		state.FactMap = discovery.UpdatedFactMap
 	}
 
-	slog.Info("chat: discovery turn",
+	// Post-LLM guardrail: detect repeated questions
+	forcedByRepetition := false
+	if vision.IsSimilarQuestion(discovery.Message, state.LastBotMessage) {
+		slog.Warn("chat: repeated question detected, forcing advance",
+			"session_id", sessionID,
+			"turn", state.Turn,
+			"current_msg", discovery.Message,
+			"previous_msg", state.LastBotMessage,
+		)
+		state.Metrics.RepeatedQuestionDetected = true
+		forcedByRepetition = true
+	}
+
+	state.AssistantMessages = append(state.AssistantMessages, discovery.Message)
+	state.LastBotMessage = discovery.Message
+
+	slog.Info("chat: discovery state",
 		"session_id", sessionID,
 		"turn", state.Turn,
 		"bot_message", discovery.Message,
 		"input_mode", discovery.InputMode,
 		"reasoning", discovery.Reasoning,
-		"new_facts", discovery.ExtractedFacts,
-		"covered_facts", state.CoveredFacts,
-		"facts_count", len(state.CoveredFacts),
+		"facts_covered", session.CountCoveredFacts(state.FactMap),
+		"missing_critical", session.ListMissingCriticalFacts(state.FactMap),
+		"exit_signal_count", state.Metrics.ExitSignalCount,
+		"consecutive_short", state.Metrics.ConsecutiveShortResponses,
+		"last_word_count", state.Metrics.LastResponseWordCount,
+		"llm_wants_advance", discovery.AdvanceToDiagnosis,
+		"repeated_question", forcedByRepetition,
 	)
 
-	// Deterministic exit: backend decides when we have enough info
-	readyForDiag := state.ReadyForDiagnosis()
-	maxTurnsReached := state.Turn >= session.MaxDiscoveryTurns
-	shouldAdvance := readyForDiag || maxTurnsReached
+	// Advance decision
+	shouldAdvance := discovery.AdvanceToDiagnosis || forcedByRepetition
+
+	// Guardrail: if LLM says advance but also sends options → block
+	if shouldAdvance && len(discovery.Options) > 0 && !forcedByRepetition {
+		slog.Warn("chat: blocking premature advance — LLM sent advance=true with options",
+			"session_id", sessionID,
+			"turn", state.Turn,
+		)
+		shouldAdvance = false
+	}
+
+	// Safety net: force advance at turn cap
+	forcedByCap := false
+	if state.Turn >= session.MaxAgenticTurns && !shouldAdvance {
+		slog.Warn("chat: forcing advance at turn cap",
+			"session_id", sessionID,
+			"turn", state.Turn,
+		)
+		shouldAdvance = true
+		forcedByCap = true
+	}
+
 	slog.Info("chat: advance decision",
 		"session_id", sessionID,
 		"turn", state.Turn,
-		"ready_for_diagnosis", readyForDiag,
-		"max_turns_reached", maxTurnsReached,
+		"llm_wants_advance", discovery.AdvanceToDiagnosis,
+		"forced_by_repetition", forcedByRepetition,
+		"forced_by_cap", forcedByCap,
 		"advancing", shouldAdvance,
 	)
+
 	if shouldAdvance {
 		return handleDiagnosisAndRecommendation(ctx, deps, state, sessionID, analysis)
 	}
@@ -344,28 +454,31 @@ func handleDiscovery(ctx context.Context, deps *ChatDeps, state *session.Session
 func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state *session.SessionState, sessionID string, analysis *vision.OutfitAnalysis) (*ChatResponse, error) {
 	start := time.Now()
 
-	// Populate context fields from discovery facts into the profile
+	// Bridge FactMap → Profile
 	profile := state.StyleProfile
 	if profile == nil {
 		profile = &session.UserStyleProfile{}
 	}
-	if v, ok := state.CoveredFacts["occasion"]; ok {
-		profile.Occasion = v
-	}
-	if v, ok := state.CoveredFacts["intention"]; ok {
-		profile.DesiredProjection = v
-	}
-	if v, ok := state.CoveredFacts["exploration"]; ok {
-		profile.Approach = v
-	}
-	if v, ok := state.CoveredFacts["pain_points"]; ok {
-		profile.PainPoints = []string{v}
-	}
-	if v, ok := state.CoveredFacts["aspirational"]; ok {
-		profile.AspirationalRef = v
-	}
-	if v, ok := state.CoveredFacts["constraints"]; ok {
-		profile.Constraints = []string{v}
+	fm := state.FactMap
+	if fm != nil {
+		if fm.Occasion != nil {
+			profile.Occasion = *fm.Occasion
+		}
+		if fm.Intention != nil {
+			profile.DesiredProjection = *fm.Intention
+		}
+		if fm.Approach != nil {
+			profile.Approach = *fm.Approach
+		}
+		if len(fm.PainPoints) > 0 {
+			profile.PainPoints = fm.PainPoints
+		}
+		if fm.AspirationalRef != nil {
+			profile.AspirationalRef = *fm.AspirationalRef
+		}
+		if len(fm.Constraints) > 0 {
+			profile.Constraints = fm.Constraints
+		}
 	}
 
 	// Log profile state going into diagnosis
@@ -425,9 +538,47 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 	}
 	slog.Info("chat: diagnosis done", "session_id", sessionID, "elapsed", time.Since(start))
 
-	// Phase 4: Recommendation
+	// Phase 3.5: RAG Search — find real products for top gaps
+	var gapProducts []vision.GapProductContext
+	if deps.RAGEngine != nil && len(diagnosis.Profile.GapAnalysis) > 0 {
+		topGaps := selectTopGaps(diagnosis.Profile.GapAnalysis, 3)
+		queries := rag.BuildSearchQueries(topGaps, state.StyleProfile, 3)
+
+		ragStart := time.Now()
+		g, gctx := errgroup.WithContext(ctx)
+		results := make([][]rag.Product, len(queries))
+		for i, q := range queries {
+			g.Go(func() error {
+				prods, err := deps.RAGEngine.Search(gctx, q)
+				if err != nil {
+					slog.Warn("rag: search failed", "gap", q.Text, "error", err)
+					return nil // non-fatal
+				}
+				results[i] = prods
+				return nil
+			})
+		}
+		_ = g.Wait()
+
+		for i, gap := range topGaps {
+			if i < len(results) && len(results[i]) > 0 {
+				gapProducts = append(gapProducts, vision.GapProductContext{
+					Gap:      gap.Actionable,
+					Products: results[i],
+				})
+			}
+		}
+		slog.Info("chat: RAG search done",
+			"session_id", sessionID,
+			"queries", len(queries),
+			"gaps_with_products", len(gapProducts),
+			"elapsed", time.Since(ragStart),
+		)
+	}
+
+	// Phase 4: Recommendation (with products if available)
 	state.Phase = session.PhaseRecommendation
-	advice, err := deps.Advisor.GenerateRecommendation(ctx, state.StyleProfile)
+	advice, err := deps.Advisor.GenerateRecommendationWithProducts(ctx, state.StyleProfile, gapProducts)
 	if err != nil {
 		return nil, fmt.Errorf("recommendation failed: %w", err)
 	}
@@ -448,8 +599,11 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 			"impact", a.Impact,
 			"effort", a.Effort,
 			"description", a.Description,
+			"product_ids", a.ProductIDs,
 		)
 	}
+
+	allProducts := collectUniqueProducts(gapProducts)
 
 	actions := make([]PriorityActionResponse, len(advice.PriorityActions))
 	for i, a := range advice.PriorityActions {
@@ -459,6 +613,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 			Description: a.Description,
 			Impact:      a.Impact,
 			Effort:      a.Effort,
+			ProductIDs:  a.ProductIDs,
 		}
 	}
 
@@ -471,5 +626,66 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 		Options:         nil,
 		IsFinal:         true,
 		PriorityActions: actions,
+		Products:        allProducts,
 	}, nil
+}
+
+// selectTopGaps returns the top N gaps sorted by priority (highest first).
+func selectTopGaps(gaps []session.GapItem, n int) []session.GapItem {
+	sorted := make([]session.GapItem, len(gaps))
+	copy(sorted, gaps)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Priority > sorted[j].Priority
+	})
+	if len(sorted) > n {
+		sorted = sorted[:n]
+	}
+	return sorted
+}
+
+// prepopulateFactMap fills the fact_map with observations derived from image analysis.
+func prepopulateFactMap(fm *session.FactMap, insights *vision.ImageInsights) {
+	if fm == nil || insights == nil {
+		return
+	}
+	for _, issue := range insights.DetectedIssues {
+		if issue.Severity == "high" {
+			fm.PainPoints = append(fm.PainPoints,
+				fmt.Sprintf("[detectado en foto] %s", issue.Observation))
+		}
+	}
+	if insights.InferredFacts.TooInformalFor != "" {
+		ctx := fmt.Sprintf("Outfit actual es demasiado casual para %s",
+			insights.InferredFacts.TooInformalFor)
+		fm.AdditionalContext = &ctx
+	}
+}
+
+// getPendingCompensations returns compensation areas not yet covered.
+func getPendingCompensations(state *session.SessionState, insights *vision.ImageInsights) []vision.CompensationArea {
+	if insights == nil || len(insights.CompensationNeeded) == 0 {
+		return nil
+	}
+	var pending []vision.CompensationArea
+	for _, comp := range insights.CompensationNeeded {
+		if !state.IsCompensationCovered(comp.BlindSpot) {
+			pending = append(pending, comp)
+		}
+	}
+	return pending
+}
+
+// collectUniqueProducts deduplicates products across all gap results.
+func collectUniqueProducts(gapProducts []vision.GapProductContext) []rag.Product {
+	seen := make(map[string]bool)
+	var unique []rag.Product
+	for _, gp := range gapProducts {
+		for _, p := range gp.Products {
+			if !seen[p.ID] {
+				seen[p.ID] = true
+				unique = append(unique, p)
+			}
+		}
+	}
+	return unique
 }

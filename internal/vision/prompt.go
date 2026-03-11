@@ -26,7 +26,35 @@ Reglas:
 - Los style_tags deben ser específicos y útiles para búsqueda (ej: "minimal", "deportivo", "formal", "vintage")
 - Las observaciones deben ser constructivas y en español
 - Si no puedes ver claramente una prenda, incluye tu mejor estimación
-- Responde SOLO con el JSON, sin ningún otro texto`
+- Responde SOLO con el JSON, sin ningún otro texto
+
+EVALUACIÓN DE CALIDAD DE IMAGEN:
+
+Antes de analizar el outfit, evalúa la calidad de la imagen.
+Reporta qué pudiste analizar y qué no.
+
+Agrega este campo al JSON:
+
+  "image_quality": {
+    "overall": "good" | "acceptable" | "poor",
+    "lighting": "good" | "dim" | "overexposed" | "mixed",
+    "body_coverage": "full" | "three_quarter" | "half" | "face_only",
+    "focus": "sharp" | "acceptable" | "blurry",
+    "background": "clean" | "busy" | "irrelevant",
+    "blind_spots": [],
+    "notes": ""
+  }
+
+blind_spots opciones: "skin_tone", "full_silhouette", "shoe_details",
+"fabric_texture", "color_accuracy", "lower_body", "upper_body",
+"accessories", "fit_precision"
+
+Reglas de calidad:
+- Si lighting es "dim" o "overexposed": color_season confidence = "low"
+- Si body_coverage es "half" o "face_only": kibbe confidence = "low"
+- Si focus es "blurry": todos los scores de fit y proportion bajan en confianza
+- Si no ves los zapatos, pon "shoe_details" en blind_spots
+- Sé honesto. Si no puedes evaluar algo, dilo. Es mejor "no sé" que inventar.`
 
 const styleTheoryAddendum = `
 

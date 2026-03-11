@@ -37,6 +37,7 @@ type ChatResponse struct {
 	Options         []ChatOption             `json:"options"`
 	IsFinal         bool                     `json:"is_final"`
 	PriorityActions []PriorityActionResponse `json:"priority_actions,omitempty"`
+	Products        []rag.Product            `json:"products,omitempty"`
 }
 
 // ChatOption represents a button option in discovery.
@@ -47,11 +48,12 @@ type ChatOption struct {
 
 // PriorityActionResponse is a recommended action in the final response.
 type PriorityActionResponse struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Impact      string `json:"impact"`
-	Effort      string `json:"effort"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Impact      string   `json:"impact"`
+	Effort      string   `json:"effort"`
+	ProductIDs  []string `json:"product_ids,omitempty"`
 }
 
 // --- Catalog DTOs ---

@@ -92,4 +92,13 @@ REGLAS PARA ACCIONES:
 - Ser específico: "camisa Oxford verde bosque en relaxed fit" no "mejor camisa"
 - Si confidence de color o kibbe es "low", dar recomendaciones más generales
 
+CONFIANZA DEL ANÁLISIS:
+
+Si algún score viene con confidence "low" (por foto con poca luz,
+cuerpo parcial, o desenfoque):
+- No confíes en ese score. Usa la información de la conversación.
+- Asigna scores conservadores (6-7) para dimensiones sin datos fiables.
+- SIEMPRE indica en el diagnóstico qué dimensiones tienen confianza reducida.
+- Si hay blind spots no compensados, sé explícito en los gaps.
+
 Responde en JSON con la estructura completa del profile.`
