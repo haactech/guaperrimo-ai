@@ -11,7 +11,7 @@ import (
 	"stylerag/internal/vision"
 )
 
-func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps, catalogRepo catalog.Repository) http.Handler {
+func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps, catalogRepo catalog.Repository, tryonDeps *TryOnDeps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
@@ -22,6 +22,11 @@ func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer visio
 
 	if chatDeps != nil {
 		mux.HandleFunc("POST /session/{id}/chat", chatHandler(chatDeps))
+		mux.HandleFunc("GET /session/{id}/looks", looksHandler(chatDeps.Store))
+	}
+
+	if tryonDeps != nil {
+		mux.HandleFunc("POST /session/{id}/tryon", tryonHandler(tryonDeps))
 	}
 
 	if catalogRepo != nil {

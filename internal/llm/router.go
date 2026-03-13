@@ -20,6 +20,7 @@ const (
 	TurnTypeDiscoveryQuestion  TurnType = "discovery_question"  // Conversational question - use economy
 	TurnTypeDiagnosis          TurnType = "diagnosis"           // Style diagnosis - use potent
 	TurnTypeRecommendation     TurnType = "recommendation"      // Final advice - use economy
+	TurnTypeLookComposition    TurnType = "look_composition"    // Compose outfit looks - use economy
 )
 
 // Router selects the appropriate model tier based on turn type
@@ -37,7 +38,7 @@ func NewRouter(potent, economy Provider) *Router {
 
 func (r *Router) SelectProvider(turnType TurnType) Provider {
 	switch turnType {
-	case TurnTypePreferenceGather, TurnTypeDiscoveryQuestion, TurnTypeRecommendation:
+	case TurnTypePreferenceGather, TurnTypeDiscoveryQuestion, TurnTypeRecommendation, TurnTypeLookComposition:
 		return r.economy
 	default:
 		return r.potent

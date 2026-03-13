@@ -18,6 +18,7 @@ import (
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/telemetry"
+	"stylerag/internal/tryon"
 	"stylerag/internal/vision"
 )
 
@@ -116,13 +117,64 @@ func main() {
 	_ = retailerRepo // will be used for auth middleware
 	_ = sessionRepo  // will be used for analytics tracking
 
+	// Virtual Try-On (optional — degrades gracefully)
+	if err := cfg.SetupGCPCredentials(); err != nil {
+		slog.ErrorContext(initCtx, "failed to setup GCP credentials", "error", err)
+	}
+	var tryonDeps *api.TryOnDeps
+	if cfg.GCPProjectID != "" {
+		var vtonProvider tryon.VTONProvider
+		switch cfg.VTONProvider {
+		case "fashn":
+			vtonProvider = &tryon.FashnVTON{
+				APIKey:     cfg.FashnAPIKey,
+				BaseURL:    "https://api.fashn.ai/v1",
+				Mode:       cfg.FashnMode,
+				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
+			}
+		default:
+			vtonProvider = &tryon.GoogleVertexVTON{
+				ProjectID:  cfg.GCPProjectID,
+				Region:     cfg.GCPRegion,
+				BaseSteps:  cfg.VTONBaseSteps,
+				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
+			}
+		}
+		tryonDeps = &api.TryOnDeps{
+			Store:        sessionStore,
+			ImageStore:   imageStore,
+			RAGEngine:    ragEngine,
+			VTONProvider: vtonProvider,
+		}
+		slog.InfoContext(initCtx, "VTON enabled", "provider", cfg.VTONProvider)
+
+		// Look generation pipeline (requires VTON + RAG)
+		if ragEngine != nil {
+			lookComposer := tryon.NewLookComposer(llmRouter, cfg.LookCount)
+			lookGenerator := &tryon.LookGenerator{
+				Store:        sessionStore,
+				ImageStore:   imageStore,
+				RAGEngine:    ragEngine,
+				VTONProvider: vtonProvider,
+				Timeout:      cfg.LookGenerationTimeout,
+			}
+			chatDeps.LookComposer = lookComposer
+			chatDeps.LookGenerator = lookGenerator
+			slog.InfoContext(initCtx, "look generation enabled", "look_count", cfg.LookCount, "timeout", cfg.LookGenerationTimeout)
+		} else {
+			slog.WarnContext(initCtx, "look generation disabled (RAG not available)")
+		}
+	} else {
+		slog.WarnContext(initCtx, "VTON disabled (GCP_PROJECT_ID not set)")
+	}
+
 	// Avoid typed-nil interface: a (*PostgresRepository)(nil) is not a nil catalog.Repository.
 	var catRepo catalog.Repository
 	if catalogRepo != nil {
 		catRepo = catalogRepo
 	}
 
-	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps, catRepo)
+	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps, catRepo, tryonDeps)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

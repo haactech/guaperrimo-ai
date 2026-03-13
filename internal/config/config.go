@@ -2,10 +2,12 @@ package config
 
 import (
 	"bufio"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -53,6 +55,20 @@ type Config struct {
 	R2AccessKeySecret string
 	R2BucketName      string
 	R2PublicURL       string
+
+	// Virtual Try-On
+	VTONProvider   string        // "google_vertex" (default) or "fashn"
+	GCPProjectID   string
+	GCPSAKeyJSON   string        // Service account JSON for production (written to temp file)
+	GCPRegion      string
+	VTONBaseSteps int
+	FashnAPIKey   string
+	FashnMode     string
+	VTONTimeout   time.Duration
+
+	// Look Generation
+	LookGenerationTimeout time.Duration
+	LookCount             int
 }
 
 func Load() *Config {
@@ -93,6 +109,18 @@ func Load() *Config {
 		R2AccessKeySecret: getEnv("R2_ACCESS_KEY_SECRET", ""),
 		R2BucketName:      getEnv("R2_BUCKET_NAME", ""),
 		R2PublicURL:       getEnv("R2_PUBLIC_URL", ""),
+
+		VTONProvider:  getEnv("VTON_PROVIDER", "google_vertex"),
+		GCPProjectID:  getEnv("GCP_PROJECT_ID", ""),
+		GCPSAKeyJSON:  getEnv("GCP_SA_KEY_JSON", ""),
+		GCPRegion:     getEnv("GCP_REGION", "us-central1"),
+		VTONBaseSteps: getEnvInt("VTON_BASE_STEPS", 20),
+		FashnAPIKey:   getEnv("FASHN_API_KEY", ""),
+		FashnMode:     getEnv("FASHN_MODE", "balanced"),
+		VTONTimeout:   parseDuration(getEnv("VTON_TIMEOUT", "30s")),
+
+		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "90s")),
+		LookCount:             getEnvInt("LOOK_COUNT", 3),
 	}
 }
 
@@ -126,6 +154,36 @@ func parseLogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// SetupGCPCredentials writes the service account JSON to a temp file and sets
+// GOOGLE_APPLICATION_CREDENTIALS so that ADC (FindDefaultCredentials) picks it up.
+// No-op if GCPSAKeyJSON is empty (local dev uses `gcloud auth application-default login`).
+func (c *Config) SetupGCPCredentials() error {
+	if c.GCPSAKeyJSON == "" {
+		return nil
+	}
+	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		return nil // already set externally
+	}
+	f, err := os.CreateTemp("", "gcp-sa-*.json")
+	if err != nil {
+		return fmt.Errorf("creating temp file for GCP credentials: %w", err)
+	}
+	if _, err := f.WriteString(c.GCPSAKeyJSON); err != nil {
+		f.Close()
+		return fmt.Errorf("writing GCP credentials: %w", err)
+	}
+	f.Close()
+	return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", f.Name())
+}
+
+func parseDuration(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 30 * time.Second
+	}
+	return d
 }
 
 // loadDotenv reads a .env file and sets env vars that aren't already set.

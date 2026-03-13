@@ -80,6 +80,68 @@ type ConversationMetrics struct {
 	RepeatedQuestionDetected  bool `json:"repeated_question_detected"`
 }
 
+// LookStatus tracks the generation state of a single look.
+type LookStatus string
+
+const (
+	LookStatusPending    LookStatus = "pending"
+	LookStatusGenerating LookStatus = "generating"
+	LookStatusReady      LookStatus = "ready"
+	LookStatusFailed     LookStatus = "failed"
+)
+
+// LookPiece describes a single garment slot within a look.
+type LookPiece struct {
+	Slot        string `json:"slot"`        // "upper_body" | "lower_body"
+	Description string `json:"description"` // for RAG search
+	Category    string `json:"category"`    // VTON category
+	Reasoning   string `json:"reasoning"`
+}
+
+// Look is the LLM-composed outfit definition (before VTON generation).
+type Look struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Pieces      []LookPiece `json:"pieces"`
+	Vibe        string     `json:"vibe"`
+}
+
+// LookPieceResult holds the generation result for a single garment piece.
+type LookPieceResult struct {
+	Slot            string `json:"slot"`
+	ProductID       string `json:"product_id,omitempty"`
+	ProductName     string `json:"product_name,omitempty"`
+	ProductImageURL string `json:"product_image_url,omitempty"`
+	TryOnImageURL   string `json:"tryon_image_url,omitempty"`
+	Category        string `json:"category"`
+	GenerationMs    int64  `json:"generation_time_ms,omitempty"`
+}
+
+// LookResult tracks the VTON generation state and output for a single look.
+type LookResult struct {
+	LookID        string            `json:"look_id"`
+	Status        LookStatus        `json:"status"`
+	Pieces        []LookPieceResult `json:"pieces,omitempty"`
+	FinalImageURL string            `json:"final_image_url,omitempty"`
+	ErrorMessage  string            `json:"error_message,omitempty"`
+	GenerationMs  int64             `json:"generation_time_ms"`
+	CreatedAt     time.Time         `json:"created_at"`
+}
+
+// TryOnResult caches a virtual try-on generation result.
+type TryOnResult struct {
+	ActionID        string    `json:"action_id"`
+	TryOnImageURL   string    `json:"tryon_image_url"`
+	GarmentName     string    `json:"garment_name"`
+	GarmentSource   string    `json:"garment_source"`
+	CatalogID       string    `json:"catalog_id"`
+	GarmentImageURL string    `json:"garment_image_url"`
+	GenerationMs    int64     `json:"generation_time_ms"`
+	ProviderName    string    `json:"provider_name"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
 // SessionState tracks the full state of a conversational session.
 type SessionState struct {
 	ID                   string              `json:"id"`
@@ -95,6 +157,10 @@ type SessionState struct {
 	CoveredCompensations []string            `json:"covered_compensations"` // blind spots already addressed
 	Diagnosis            *StyleDiagnosis     `json:"diagnosis,omitempty"`
 	StyleProfile         *UserStyleProfile   `json:"style_profile,omitempty"`
+	ImageKey             string              `json:"image_key,omitempty"`   // R2 key of the user's photo
+	TryOnResults         []TryOnResult       `json:"tryon_results,omitempty"`
+	Looks                []Look              `json:"looks,omitempty"`
+	LookResults          []LookResult        `json:"look_results,omitempty"`
 	CreatedAt            time.Time           `json:"created_at"`
 	UpdatedAt            time.Time           `json:"updated_at"`
 }

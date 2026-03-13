@@ -18,6 +18,7 @@ import (
 	"stylerag/internal/rag"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
+	"stylerag/internal/tryon"
 	"stylerag/internal/vision"
 )
 
@@ -32,6 +33,9 @@ type ChatDeps struct {
 	Diagnosis  *vision.DiagnosisGenerator
 	Advisor    *vision.StyleAdvisor
 	RAGEngine  rag.Engine // nil = RAG disabled
+
+	LookComposer  *tryon.LookComposer  // nil = look generation disabled
+	LookGenerator *tryon.LookGenerator // nil = look generation disabled
 }
 
 func chatHandler(deps *ChatDeps) http.HandlerFunc {
@@ -146,6 +150,7 @@ func handleCapture(ctx context.Context, deps *ChatDeps, state *session.SessionSt
 
 	sort.Strings(keys)
 	latestKey := keys[len(keys)-1]
+	state.ImageKey = latestKey
 
 	imageData, err := deps.ImageStore.Download(ctx, latestKey)
 	if err != nil {
@@ -633,6 +638,37 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 		}
 	}
 
+	// Look generation pipeline (if configured and user has an image)
+	looksGenerating := false
+	if deps.LookComposer != nil && deps.LookGenerator != nil && state.ImageKey != "" {
+		looks, compErr := deps.LookComposer.ComposeLooks(ctx, state.StyleProfile, advice.PriorityActions)
+		if compErr != nil {
+			slog.WarnContext(ctx, "chat: look composition failed, skipping looks",
+				"error", compErr, "session_id", sessionID)
+		} else if len(looks) > 0 {
+			state.Looks = looks
+			// Initialize look results with pending status
+			state.LookResults = make([]session.LookResult, len(looks))
+			for i, l := range looks {
+				state.LookResults[i] = session.LookResult{
+					LookID:    l.ID,
+					Status:    session.LookStatusPending,
+					CreatedAt: time.Now(),
+				}
+			}
+			// Save state before launching background generation
+			if err := deps.Store.Save(state); err != nil {
+				slog.ErrorContext(ctx, "chat: failed to save looks state", "error", err, "session_id", sessionID)
+			}
+			// Launch background generation
+			go deps.LookGenerator.GenerateAll(context.Background(), sessionID)
+			looksGenerating = true
+
+			slog.InfoContext(ctx, "chat: look generation launched",
+				"session_id", sessionID, "look_count", len(looks))
+		}
+	}
+
 	return &ChatResponse{
 		SessionID:       sessionID,
 		Phase:           string(session.PhaseRecommendation),
@@ -643,6 +679,7 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 		IsFinal:         true,
 		PriorityActions: actions,
 		Products:        allProducts,
+		LooksGenerating: looksGenerating,
 	}, nil
 }
 

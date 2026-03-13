@@ -38,6 +38,7 @@ type ChatResponse struct {
 	IsFinal         bool                     `json:"is_final"`
 	PriorityActions []PriorityActionResponse `json:"priority_actions,omitempty"`
 	Products        []rag.Product            `json:"products,omitempty"`
+	LooksGenerating bool                     `json:"looks_generating,omitempty"`
 }
 
 // ChatOption represents a button option in discovery.
@@ -79,4 +80,79 @@ type BatchGetResponse struct {
 // CategoriesResponse is the response for GET /products/categories.
 type CategoriesResponse struct {
 	Categories []catalog.CategoryCount `json:"categories"`
+}
+
+// --- Try-On DTOs ---
+
+// TryOnRequest is the input for POST /session/{id}/tryon.
+type TryOnRequest struct {
+	ActionID           string `json:"action_id"`
+	GarmentDescription string `json:"garment_description"`
+}
+
+// TryOnResponse is the output for POST /session/{id}/tryon.
+type TryOnResponse struct {
+	SessionID     string      `json:"session_id"`
+	ActionID      string      `json:"action_id"`
+	TryOnImageURL string      `json:"tryon_image_url"`
+	GarmentUsed   GarmentInfo `json:"garment_used"`
+	GenerationMs  int64       `json:"generation_time_ms"`
+}
+
+// GarmentInfo describes the garment used in the try-on.
+type GarmentInfo struct {
+	Name      string `json:"name"`
+	Source    string `json:"source"`
+	CatalogID string `json:"catalog_id"`
+	ImageURL  string `json:"image_url"`
+}
+
+// --- Look DTOs ---
+
+// LooksResponse is the response for GET /session/{id}/looks.
+type LooksResponse struct {
+	SessionID   string          `json:"session_id"`
+	Status      string          `json:"status"` // "pending" | "generating" | "partial" | "ready"
+	Looks       []LookDTO       `json:"looks"`
+	LookResults []LookResultDTO `json:"look_results"`
+	AllReady    bool            `json:"all_ready"`
+	ReadyCount  int             `json:"ready_count"`
+	TotalCount  int             `json:"total_count"`
+}
+
+// LookDTO represents a composed look definition.
+type LookDTO struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Vibe        string        `json:"vibe"`
+	Pieces      []LookPieceDTO `json:"pieces"`
+}
+
+// LookPieceDTO represents a single piece in a look.
+type LookPieceDTO struct {
+	Slot        string `json:"slot"`
+	Description string `json:"description"`
+	Category    string `json:"category"`
+}
+
+// LookResultDTO represents the generation result for a look.
+type LookResultDTO struct {
+	LookID        string           `json:"look_id"`
+	Status        string           `json:"status"`
+	Pieces        []PieceResultDTO `json:"pieces,omitempty"`
+	FinalImageURL string           `json:"final_image_url,omitempty"`
+	ErrorMessage  string           `json:"error_message,omitempty"`
+	GenerationMs  int64            `json:"generation_time_ms"`
+}
+
+// PieceResultDTO represents the generation result for a single piece.
+type PieceResultDTO struct {
+	Slot            string `json:"slot"`
+	ProductID       string `json:"product_id,omitempty"`
+	ProductName     string `json:"product_name,omitempty"`
+	ProductImageURL string `json:"product_image_url,omitempty"`
+	TryOnImageURL   string `json:"tryon_image_url,omitempty"`
+	Category        string `json:"category"`
+	GenerationMs    int64  `json:"generation_time_ms,omitempty"`
 }
