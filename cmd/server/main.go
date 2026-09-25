@@ -15,6 +15,7 @@ import (
 	"stylerag/internal/database"
 	"stylerag/internal/llm"
 	"stylerag/internal/rag"
+	"stylerag/internal/search"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/telemetry"
@@ -100,18 +101,38 @@ func main() {
 		)
 	}
 
+	// Product search (web or RAG based on config)
+	var productSearcher search.ProductSearcher
+	switch cfg.SearchMode {
+	case "web":
+		if cfg.SerpAPIKey != "" {
+			productSearcher = search.NewSerpSearcher(cfg.SerpAPIKey, cfg.SearchLocation)
+			slog.InfoContext(initCtx, "product search: web (SerpAPI)", "location", cfg.SearchLocation)
+		} else {
+			slog.WarnContext(initCtx, "SEARCH_MODE=web but SERPAPI_KEY not set, search disabled")
+		}
+	default: // "rag"
+		if ragEngine != nil {
+			productSearcher = search.NewRAGAdapter(ragEngine)
+			slog.InfoContext(initCtx, "product search: RAG")
+		} else {
+			slog.WarnContext(initCtx, "product search disabled (RAG not available)")
+		}
+	}
+
 	// Conversational advisor dependencies
 	sessionStore := session.NewInMemoryStore(30 * time.Minute)
 	discovery := vision.NewDiscoveryManager(llmRouter)
 	diagnosis := vision.NewDiagnosisGenerator(llmRouter)
 	chatDeps := &api.ChatDeps{
-		Store:      sessionStore,
-		ImageStore: imageStore,
-		Analyzer:   analyzer,
-		Discovery:  discovery,
-		Diagnosis:  diagnosis,
-		Advisor:    advisor,
-		RAGEngine:  ragEngine,
+		Store:           sessionStore,
+		ImageStore:      imageStore,
+		Analyzer:        analyzer,
+		Discovery:       discovery,
+		Diagnosis:       diagnosis,
+		Advisor:         advisor,
+		RAGEngine:       ragEngine,
+		ProductSearcher: productSearcher,
 	}
 
 	_ = retailerRepo // will be used for auth middleware

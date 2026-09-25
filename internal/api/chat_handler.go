@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"stylerag/internal/rag"
+	"stylerag/internal/search"
 	"stylerag/internal/session"
 	"stylerag/internal/storage"
 	"stylerag/internal/tryon"
@@ -26,13 +27,14 @@ var chatTracer = otel.Tracer("stylerag/chat")
 
 // ChatDeps bundles dependencies for the chat handler.
 type ChatDeps struct {
-	Store      session.SessionStore
-	ImageStore storage.ImageStore
-	Analyzer   vision.Analyzer
-	Discovery  *vision.DiscoveryManager
-	Diagnosis  *vision.DiagnosisGenerator
-	Advisor    *vision.StyleAdvisor
-	RAGEngine  rag.Engine // nil = RAG disabled
+	Store           session.SessionStore
+	ImageStore      storage.ImageStore
+	Analyzer        vision.Analyzer
+	Discovery       *vision.DiscoveryManager
+	Diagnosis       *vision.DiagnosisGenerator
+	Advisor         *vision.StyleAdvisor
+	RAGEngine       rag.Engine              // nil = RAG disabled (still used by look generation)
+	ProductSearcher search.ProductSearcher   // nil = product search disabled (web or RAG)
 
 	LookComposer  *tryon.LookComposer  // nil = look generation disabled
 	LookGenerator *tryon.LookGenerator // nil = look generation disabled
@@ -559,20 +561,21 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 	}
 	slog.InfoContext(ctx, "chat: diagnosis done", "session_id", sessionID, "elapsed", time.Since(start))
 
-	// Phase 3.5: RAG Search — find real products for top gaps
+	// Phase 3.5: Product Search — find real products for top gaps (web or RAG)
 	var gapProducts []vision.GapProductContext
-	if deps.RAGEngine != nil && len(diagnosis.Profile.GapAnalysis) > 0 {
+	if deps.ProductSearcher != nil && len(diagnosis.Profile.GapAnalysis) > 0 {
 		topGaps := selectTopGaps(diagnosis.Profile.GapAnalysis, 3)
-		queries := rag.BuildSearchQueries(topGaps, state.StyleProfile, 3)
+		queries, searchOpts := search.BuildQueries(topGaps, state.StyleProfile)
 
-		ragStart := time.Now()
+		searchStart := time.Now()
 		g, gctx := errgroup.WithContext(ctx)
 		results := make([][]rag.Product, len(queries))
 		for i, q := range queries {
+			opts := searchOpts[i]
 			g.Go(func() error {
-				prods, err := deps.RAGEngine.Search(gctx, q)
+				prods, err := deps.ProductSearcher.SearchProducts(gctx, q, opts)
 				if err != nil {
-					slog.WarnContext(gctx, "rag: search failed", "gap", q.Text, "error", err)
+					slog.WarnContext(gctx, "search: failed", "query", q, "error", err)
 					return nil // non-fatal
 				}
 				results[i] = prods
@@ -589,11 +592,11 @@ func handleDiagnosisAndRecommendation(ctx context.Context, deps *ChatDeps, state
 				})
 			}
 		}
-		slog.InfoContext(ctx, "chat: RAG search done",
+		slog.InfoContext(ctx, "chat: product search done",
 			"session_id", sessionID,
 			"queries", len(queries),
 			"gaps_with_products", len(gapProducts),
-			"elapsed", time.Since(ragStart),
+			"elapsed", time.Since(searchStart),
 		)
 	}
 

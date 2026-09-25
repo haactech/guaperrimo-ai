@@ -69,6 +69,11 @@ type Config struct {
 	// Look Generation
 	LookGenerationTimeout time.Duration
 	LookCount             int
+
+	// Search mode: "rag" (default) or "web"
+	SearchMode     string
+	SerpAPIKey     string
+	SearchLocation string // e.g., "Mexico City, Mexico"
 }
 
 func Load() *Config {
@@ -121,6 +126,10 @@ func Load() *Config {
 
 		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "90s")),
 		LookCount:             getEnvInt("LOOK_COUNT", 3),
+
+		SearchMode:     getEnv("SEARCH_MODE", "rag"),
+		SerpAPIKey:     getEnv("SERPAPI_KEY", ""),
+		SearchLocation: getEnv("SEARCH_LOCATION", ""),
 	}
 }
 
