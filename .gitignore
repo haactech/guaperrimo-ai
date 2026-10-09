@@ -1,39 +1,28 @@
 # Binaries
 *.exe
-*.exe~
 *.dll
 *.so
 *.dylib
-stylerag
-
-# Test binary
 *.test
-
-# Output of go coverage
 *.out
+/server
+/tryontest
+/qdrantseed
+/guaperrimo
+/stylerag
 
-# Dependency directories
+# Dependencies
 vendor/
 
-# IDE
+# IDE / OS
 .idea/
 .vscode/
 *.swp
-*.swo
+.DS_Store
 
 # Environment
 .env
 .env.local
 
-# Local pipeline artifacts
-data/raw/*
-data/processed/*
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Data
+# Local data
 data/
