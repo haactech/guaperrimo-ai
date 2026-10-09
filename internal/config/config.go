@@ -1,3 +1,4 @@
+// Package config reads runtime settings from the environment (and .env).
 package config
 
 import (
@@ -10,44 +11,28 @@ import (
 	"time"
 )
 
+// Config is the full runtime configuration.
 type Config struct {
 	Port     string
 	LogLevel slog.Level
+	APIKey   string // optional shared secret for the iOS app
 
-	// Database
-	PostgresURL string
-	RedisURL    string
-	QdrantURL   string
+	// LLM: one OpenAI-compatible provider for chat+tools and one model for vision.
+	LLMProvider string // mistral | moonshot | openai
+	LLMAPIKey   string
+	LLMBaseURL  string
+	LLMModel    string
+	VisionModel string
 
-	// LLM Providers
-	AnthropicAPIKey string
-	OpenAIAPIKey    string
+	// Shopping (products + nearby stores)
+	ShoppingProvider string // serpapi | fake
+	SerpAPIKey       string
+	SearchLocation   string // free-text origin for Google Shopping, e.g. "Mexico"
+	DefaultRadiusM   int
 
-	// Embeddings (OpenAI)
-	EmbeddingModel string
-	EmbeddingDims  int
-
-	// Qdrant
-	QdrantCollection string
-
-	// Mistral
-	MistralAPIKey       string
-	MistralPotentModel  string
-	MistralEconomyModel string
-
-	// Kimi (Moonshot)
-	MoonshotAPIKey    string
-	KimiPotentModel   string
-	KimiEconomyModel  string
-
-	// LLM provider selection: "kimi" or "mistral"
-	LLMProvider string
-
-	// Voice
-	AvalonAPIKey string
-
-	// Local image serving
-	ImageDir string
+	// Sessions
+	PostgresURL string        // empty = in-memory
+	SessionTTL  time.Duration // in-memory only
 
 	// Storage (Cloudflare R2)
 	R2AccountID       string
@@ -56,86 +41,123 @@ type Config struct {
 	R2BucketName      string
 	R2PublicURL       string
 
-	// Virtual Try-On
-	VTONProvider   string        // "google_vertex" (default) or "fashn"
-	GCPProjectID   string
-	GCPSAKeyJSON   string        // Service account JSON for production (written to temp file)
-	GCPRegion      string
-	VTONBaseSteps int
-	FashnAPIKey   string
-	FashnMode     string
-	VTONTimeout   time.Duration
-
-	// Look Generation
+	// Virtual try-on (Google Vertex); disabled when GCPProjectID is empty
+	GCPProjectID          string
+	GCPSAKeyJSON          string
+	GCPRegion             string
+	VTONBaseSteps         int
+	VTONTimeout           time.Duration
 	LookGenerationTimeout time.Duration
-	LookCount             int
+	LookConcurrency       int
 
-	// Search mode: "rag" (default) or "web"
-	SearchMode     string
-	SerpAPIKey     string
-	SearchLocation string // e.g., "Mexico City, Mexico"
+	// Agent
+	AgentMaxSteps     int
+	AgentMaxQuestions int
+	AgentTurnTimeout  time.Duration
 }
 
+// Load reads the environment, falling back to a .env file in the working directory.
 func Load() *Config {
-	// Load .env file if present (supports "export KEY=VAL" format)
 	loadDotenv(".env")
+
+	provider := getEnv("LLM_PROVIDER", "mistral")
+	baseURL, model, apiKey := providerDefaults(provider)
 
 	return &Config{
 		Port:     getEnv("PORT", "8080"),
 		LogLevel: parseLogLevel(getEnv("LOG_LEVEL", "info")),
+		APIKey:   getEnv("API_KEY", ""),
+
+		LLMProvider: provider,
+		LLMAPIKey:   getEnv("LLM_API_KEY", apiKey),
+		LLMBaseURL:  getEnv("LLM_BASE_URL", baseURL),
+		LLMModel:    getEnv("LLM_MODEL", model),
+		VisionModel: getEnv("VISION_MODEL", getEnv("LLM_MODEL", model)),
+
+		ShoppingProvider: getEnv("SHOPPING_PROVIDER", ""),
+		SerpAPIKey:       getEnv("SERPAPI_KEY", ""),
+		SearchLocation:   getEnv("SEARCH_LOCATION", "Mexico"),
+		DefaultRadiusM:   getEnvInt("DEFAULT_RADIUS_M", 1500),
 
 		PostgresURL: getEnv("POSTGRES_URL", ""),
-		RedisURL:    getEnv("REDIS_URL", ""),
-		QdrantURL:   getEnv("QDRANT_URL", ""),
-
-		AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
-		OpenAIAPIKey:    getEnv("OPENAI_API_KEY", ""),
-
-		EmbeddingModel:   getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
-		EmbeddingDims:    getEnvInt("OPENAI_EMBEDDING_DIMS", 1536),
-		QdrantCollection: getEnv("QDRANT_COLLECTION", "products"),
-
-		MistralAPIKey:       getEnv("MISTRAL_API_KEY", ""),
-		MistralPotentModel:  getEnv("MISTRAL_POTENT_MODEL", "mistral-large-latest"),
-		MistralEconomyModel: getEnv("MISTRAL_ECONOMY_MODEL", "mistral-small-latest"),
-
-		MoonshotAPIKey:   getEnv("MOONSHOT_API_KEY", ""),
-		KimiPotentModel:  getEnv("KIMI_POTENT_MODEL", "kimi-k2.5"),
-		KimiEconomyModel: getEnv("KIMI_ECONOMY_MODEL", "kimi-k2.5"),
-
-		LLMProvider: getEnv("LLM_PROVIDER", "mistral"),
-
-		AvalonAPIKey: getEnv("AVALON_API_KEY", ""),
-
-		ImageDir: getEnv("IMAGE_DIR", "data/fashion-dataset/images"),
+		SessionTTL:  parseDuration(getEnv("SESSION_TTL", "24h"), 24*time.Hour),
 
 		R2AccountID:       getEnv("R2_ACCOUNT_ID", ""),
 		R2AccessKeyID:     getEnv("R2_ACCESS_KEY_ID", ""),
 		R2AccessKeySecret: getEnv("R2_ACCESS_KEY_SECRET", ""),
 		R2BucketName:      getEnv("R2_BUCKET_NAME", ""),
-		R2PublicURL:       getEnv("R2_PUBLIC_URL", ""),
+		R2PublicURL:       strings.TrimRight(getEnv("R2_PUBLIC_URL", ""), "/"),
 
-		VTONProvider:  getEnv("VTON_PROVIDER", "google_vertex"),
-		GCPProjectID:  getEnv("GCP_PROJECT_ID", ""),
-		GCPSAKeyJSON:  getEnv("GCP_SA_KEY_JSON", ""),
-		GCPRegion:     getEnv("GCP_REGION", "us-central1"),
-		VTONBaseSteps: getEnvInt("VTON_BASE_STEPS", 20),
-		FashnAPIKey:   getEnv("FASHN_API_KEY", ""),
-		FashnMode:     getEnv("FASHN_MODE", "balanced"),
-		VTONTimeout:   parseDuration(getEnv("VTON_TIMEOUT", "30s")),
+		GCPProjectID:          getEnv("GCP_PROJECT_ID", ""),
+		GCPSAKeyJSON:          getEnv("GCP_SA_KEY_JSON", ""),
+		GCPRegion:             getEnv("GCP_REGION", "us-central1"),
+		VTONBaseSteps:         getEnvInt("VTON_BASE_STEPS", 20),
+		VTONTimeout:           parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
+		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
+		LookConcurrency:       getEnvInt("LOOK_CONCURRENCY", 2),
 
-		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "90s")),
-		LookCount:             getEnvInt("LOOK_COUNT", 3),
-
-		SearchMode:     getEnv("SEARCH_MODE", "rag"),
-		SerpAPIKey:     getEnv("SERPAPI_KEY", ""),
-		SearchLocation: getEnv("SEARCH_LOCATION", ""),
+		AgentMaxSteps:     getEnvInt("AGENT_MAX_STEPS", 12),
+		AgentMaxQuestions: getEnvInt("AGENT_MAX_QUESTIONS", 6),
+		AgentTurnTimeout:  parseDuration(getEnv("AGENT_TURN_TIMEOUT", "150s"), 150*time.Second),
 	}
 }
 
+// providerDefaults returns base URL, default model and the legacy key env for a provider.
+func providerDefaults(provider string) (baseURL, model, apiKey string) {
+	switch provider {
+	case "moonshot", "kimi":
+		return "https://api.moonshot.ai/v1", "kimi-k2.5", os.Getenv("MOONSHOT_API_KEY")
+	case "openai":
+		return "https://api.openai.com/v1", "", os.Getenv("OPENAI_API_KEY")
+	default:
+		return "https://api.mistral.ai/v1", "mistral-large-latest", os.Getenv("MISTRAL_API_KEY")
+	}
+}
+
+// Validate reports configuration that would make the server useless.
+func (c *Config) Validate() error {
+	var missing []string
+	if c.LLMAPIKey == "" {
+		missing = append(missing, "LLM_API_KEY (or MISTRAL_API_KEY / MOONSHOT_API_KEY / OPENAI_API_KEY)")
+	}
+	if c.LLMModel == "" {
+		missing = append(missing, "LLM_MODEL")
+	}
+	for _, kv := range []struct{ k, v string }{
+		{"R2_ACCOUNT_ID", c.R2AccountID}, {"R2_ACCESS_KEY_ID", c.R2AccessKeyID},
+		{"R2_ACCESS_KEY_SECRET", c.R2AccessKeySecret}, {"R2_BUCKET_NAME", c.R2BucketName}, {"R2_PUBLIC_URL", c.R2PublicURL},
+	} {
+		if kv.v == "" {
+			missing = append(missing, kv.k)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing configuration: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+// SetupGCPCredentials writes the service account JSON to a temp file and points
+// GOOGLE_APPLICATION_CREDENTIALS at it. No-op when unset (local ADC is used).
+func (c *Config) SetupGCPCredentials() error {
+	if c.GCPSAKeyJSON == "" || os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+		return nil
+	}
+	f, err := os.CreateTemp("", "gcp-sa-*.json")
+	if err != nil {
+		return fmt.Errorf("creating temp file for GCP credentials: %w", err)
+	}
+	if _, err := f.WriteString(c.GCPSAKeyJSON); err != nil {
+		f.Close()
+		return fmt.Errorf("writing GCP credentials: %w", err)
+	}
+	f.Close()
+	return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", f.Name())
+}
+
 func getEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+	if v := os.Getenv(key); v != "" {
+		return v
 	}
 	return fallback
 }
@@ -153,7 +175,7 @@ func getEnvInt(key string, fallback int) int {
 }
 
 func parseLogLevel(level string) slog.Level {
-	switch level {
+	switch strings.ToLower(level) {
 	case "debug":
 		return slog.LevelDebug
 	case "warn":
@@ -165,45 +187,22 @@ func parseLogLevel(level string) slog.Level {
 	}
 }
 
-// SetupGCPCredentials writes the service account JSON to a temp file and sets
-// GOOGLE_APPLICATION_CREDENTIALS so that ADC (FindDefaultCredentials) picks it up.
-// No-op if GCPSAKeyJSON is empty (local dev uses `gcloud auth application-default login`).
-func (c *Config) SetupGCPCredentials() error {
-	if c.GCPSAKeyJSON == "" {
-		return nil
-	}
-	if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
-		return nil // already set externally
-	}
-	f, err := os.CreateTemp("", "gcp-sa-*.json")
-	if err != nil {
-		return fmt.Errorf("creating temp file for GCP credentials: %w", err)
-	}
-	if _, err := f.WriteString(c.GCPSAKeyJSON); err != nil {
-		f.Close()
-		return fmt.Errorf("writing GCP credentials: %w", err)
-	}
-	f.Close()
-	return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", f.Name())
-}
-
-func parseDuration(s string) time.Duration {
+func parseDuration(s string, fallback time.Duration) time.Duration {
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		return 30 * time.Second
+		return fallback
 	}
 	return d
 }
 
-// loadDotenv reads a .env file and sets env vars that aren't already set.
-// Supports both "KEY=VAL" and "export KEY=VAL" formats.
+// loadDotenv sets variables from a .env file that are not already set.
+// Supports "KEY=VAL" and "export KEY=VAL".
 func loadDotenv(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -215,9 +214,7 @@ func loadDotenv(path string) {
 		if !ok {
 			continue
 		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		v = strings.Trim(v, "\"'")
+		k, v = strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), "\"'")
 		if os.Getenv(k) == "" {
 			os.Setenv(k, v)
 		}

@@ -1,68 +1,69 @@
+// Package api exposes the HTTP surface consumed by the iOS app.
 package api
 
 import (
+	"crypto/subtle"
 	"net/http"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"stylerag/internal/catalog"
-	"stylerag/internal/config"
+	"stylerag/internal/session"
 	"stylerag/internal/storage"
-	"stylerag/internal/vision"
 )
 
-func NewRouter(cfg *config.Config, imageStore storage.ImageStore, analyzer vision.Analyzer, advisor *vision.StyleAdvisor, chatDeps *ChatDeps, catalogRepo catalog.Repository, tryonDeps *TryOnDeps) http.Handler {
+// Deps wires the handlers.
+type Deps struct {
+	APIKey string // optional; when set, X-API-Key is required on every route but /health
+	Images storage.ImageStore
+	Store  session.Store
+	Chat   *ChatDeps
+	TryOn  *TryOnDeps // nil = disabled
+}
+
+// NewRouter builds the HTTP handler.
+func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
-	mux.HandleFunc("GET /ready", readyHandler)
-
-	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(imageStore))
-	mux.HandleFunc("POST /session/{id}/analyze", analyzeHandler(imageStore, analyzer, advisor))
-
-	if chatDeps != nil {
-		mux.HandleFunc("POST /session/{id}/chat", chatHandler(chatDeps))
-		mux.HandleFunc("GET /session/{id}/looks", looksHandler(chatDeps.Store))
+	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(d.Images))
+	mux.HandleFunc("POST /session/{id}/chat", chatHandler(d.Chat))
+	mux.HandleFunc("GET /session/{id}/recommendation", recommendationHandler(d.Store))
+	mux.HandleFunc("GET /session/{id}/looks", looksHandler(d.Store))
+	if d.TryOn != nil {
+		mux.HandleFunc("POST /session/{id}/tryon", tryonHandler(d.TryOn))
 	}
 
-	if tryonDeps != nil {
-		mux.HandleFunc("POST /session/{id}/tryon", tryonHandler(tryonDeps))
-	}
-
-	if catalogRepo != nil {
-		mux.HandleFunc("GET /products", listProductsHandler(catalogRepo))
-		mux.HandleFunc("GET /products/categories", listCategoriesHandler(catalogRepo))
-		mux.HandleFunc("GET /products/{id}", getProductHandler(catalogRepo))
-		mux.HandleFunc("POST /products/batch", batchGetProductsHandler(catalogRepo))
-	}
-
-	if cfg.ImageDir != "" {
-		imageFS := http.StripPrefix("/images/products/", http.FileServer(http.Dir(cfg.ImageDir)))
-		mux.Handle("GET /images/products/", imageFS)
-	}
-
-	// Middleware chain: otelhttp (outer) → PanicRecovery → Logging → mux
 	var handler http.Handler = mux
+	handler = APIKeyMiddleware(d.APIKey, handler)
 	handler = LoggingMiddleware(handler)
 	handler = PanicRecoveryMiddleware(handler)
-	handler = otelhttp.NewHandler(handler, "stylerag",
+	handler = otelhttp.NewHandler(handler, "guaperrimo",
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			return r.Method + " " + r.URL.Path
 		}),
 	)
-
 	return handler
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func readyHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO: Check database connections
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ready"}`))
+// APIKeyMiddleware enforces a shared secret when one is configured.
+func APIKeyMiddleware(key string, next http.Handler) http.Handler {
+	if key == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		got := r.Header.Get("X-API-Key")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(key)) != 1 {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

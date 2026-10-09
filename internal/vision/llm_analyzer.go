@@ -10,13 +10,14 @@ import (
 	"stylerag/internal/llm"
 )
 
-// LLMAnalyzer implements Analyzer using an LLM provider via the Router.
+// LLMAnalyzer implements Analyzer with a multimodal chat model.
 type LLMAnalyzer struct {
-	router *llm.Router
+	provider llm.Provider
 }
 
-func NewLLMAnalyzer(router *llm.Router) *LLMAnalyzer {
-	return &LLMAnalyzer{router: router}
+// NewLLMAnalyzer wraps a vision-capable provider.
+func NewLLMAnalyzer(p llm.Provider) *LLMAnalyzer {
+	return &LLMAnalyzer{provider: p}
 }
 
 func (a *LLMAnalyzer) AnalyzeOutfit(ctx context.Context, imageData []byte) (*OutfitAnalysis, error) {
@@ -24,46 +25,38 @@ func (a *LLMAnalyzer) AnalyzeOutfit(ctx context.Context, imageData []byte) (*Out
 	if mediaType == "" {
 		return nil, fmt.Errorf("vision: unsupported image format")
 	}
-
-	encoded := base64.StdEncoding.EncodeToString(imageData)
-	dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, encoded)
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(imageData))
 
 	req := llm.CompletionRequest{
-		Messages: []llm.Message{
-			{
-				Role: llm.RoleUser,
-				ContentBlocks: []llm.ContentBlock{
-					{Type: "text", Text: buildOutfitAnalysisPrompt()},
-					{Type: "image_url", ImageURL: dataURI},
-				},
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			ContentBlocks: []llm.ContentBlock{
+				{Type: "text", Text: buildOutfitAnalysisPrompt()},
+				{Type: "image_url", ImageURL: dataURI},
 			},
-		},
-		MaxTokens:      8192,
-		Temperature:    0.1,
-		ResponseFormat: &llm.ResponseFormat{Type: "json_object"},
+		}},
+		MaxTokens:   8192,
+		Temperature: llm.Float(0.1),
+		JSONMode:    true,
 	}
 
-	resp, err := a.router.Complete(ctx, llm.TurnTypeImageAnalysis, req)
+	resp, err := a.provider.Complete(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("vision: LLM call failed: %w", err)
 	}
 
 	var analysis OutfitAnalysis
-	if err := json.Unmarshal([]byte(cleanJSON(resp.Content)), &analysis); err != nil {
-		return nil, fmt.Errorf("vision: failed to parse LLM response as OutfitAnalysis: %w\nraw response: %s", err, resp.Content)
+	if err := json.Unmarshal([]byte(CleanJSON(resp.Content)), &analysis); err != nil {
+		return nil, fmt.Errorf("vision: parse analysis: %w", err)
 	}
-
 	return &analysis, nil
 }
 
-// detectMediaType returns the MIME type based on magic bytes, or empty string if unknown.
 func detectMediaType(data []byte) string {
 	if len(data) < 4 {
 		return ""
 	}
-	// Use net/http's built-in detection as primary
-	detected := http.DetectContentType(data)
-	switch detected {
+	switch detected := http.DetectContentType(data); detected {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return detected
 	}

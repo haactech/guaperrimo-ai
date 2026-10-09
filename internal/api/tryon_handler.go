@@ -3,229 +3,181 @@ package api
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
-	"stylerag/internal/rag"
 	"stylerag/internal/session"
+	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
 	"stylerag/internal/tryon"
 )
 
-// TryOnDeps bundles dependencies for the try-on handler.
+// TryOnDeps bundles what the try-on handler needs.
 type TryOnDeps struct {
-	Store        session.SessionStore
-	ImageStore   storage.ImageStore
-	RAGEngine    rag.Engine
-	VTONProvider tryon.VTONProvider
+	Store      session.Store
+	Images     storage.ImageStore
+	VTON       tryon.VTONProvider
+	Timeout    time.Duration
+	HTTPClient *http.Client
 }
 
 func tryonHandler(deps *TryOnDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.PathValue("id")
-		if sessionID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		if !sessionIDPattern.MatchString(sessionID) {
+			writeError(w, http.StatusBadRequest, "invalid session id")
 			return
 		}
-
 		var req TryOnRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		if err := decodeJSON(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if req.ActionID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing field: action_id"})
+		if req.ProductID == "" && req.ActionID == "" {
+			writeError(w, http.StatusBadRequest, "missing field: product_id or action_id")
 			return
 		}
-
 		ctx := r.Context()
 
-		state, err := deps.Store.Get(sessionID)
+		st, err := deps.Store.Get(ctx, sessionID)
 		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found or expired"})
+			writeError(w, http.StatusNotFound, "session not found or expired")
 			return
 		}
-		if state.Phase != session.PhaseRecommendation {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "try-on is only available after recommendations"})
+		if st.Recommendation == nil {
+			writeError(w, http.StatusConflict, "try-on is only available after a recommendation")
 			return
 		}
-		if state.ImageKey == "" {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "no user image found in session"})
-			return
-		}
-
-		// Cache check
-		if cached := findTryOnResult(state.TryOnResults, req.ActionID); cached != nil {
-			slog.InfoContext(ctx, "tryon: cache hit", "session_id", sessionID, "action_id", req.ActionID)
-			writeJSON(w, http.StatusOK, TryOnResponse{
-				SessionID:    sessionID,
-				ActionID:     cached.ActionID,
-				TryOnImageURL: cached.TryOnImageURL,
-				GarmentUsed: GarmentInfo{
-					Name:      cached.GarmentName,
-					Source:    cached.GarmentSource,
-					CatalogID: cached.CatalogID,
-					ImageURL:  cached.GarmentImageURL,
-				},
-				GenerationMs: cached.GenerationMs,
-			})
+		if st.ImageKey == "" {
+			writeError(w, http.StatusConflict, "no user image in session")
 			return
 		}
 
-		// Category mapping
-		category := tryon.MapActionToCategory(req.ActionID, req.GarmentDescription)
-
-		// RAG search for the garment
-		if deps.RAGEngine == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "product search not available"})
+		product, ok := resolveProduct(st, req)
+		if !ok {
+			writeError(w, http.StatusNotFound, "no product found for that action")
+			return
+		}
+		if product.Thumbnail == "" {
+			writeError(w, http.StatusUnprocessableEntity, "product has no image to try on")
 			return
 		}
 
-		searchDesc := req.GarmentDescription
-		if searchDesc == "" {
-			searchDesc = req.ActionID
+		if cached := st.FindTryOn(product.ID); cached != nil {
+			writeJSON(w, http.StatusOK, tryOnResponse(sessionID, req.ActionID, product, cached.TryOnImageURL, cached.GenerationMs))
+			return
 		}
-		products, err := deps.RAGEngine.Search(ctx, rag.SearchQuery{
-			Text:       searchDesc,
-			Categories: []string{category},
-			Limit:      1,
-		})
+
+		garment, err := tryon.DownloadImage(ctx, deps.HTTPClient, product.Thumbnail, 10<<20)
 		if err != nil {
-			slog.ErrorContext(ctx, "tryon: RAG search failed", "error", err, "session_id", sessionID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "product search failed"})
+			slog.ErrorContext(ctx, "tryon: garment download", "error", err, "url", product.Thumbnail)
+			writeError(w, http.StatusBadGateway, "failed to download garment image")
 			return
 		}
-		if len(products) == 0 {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no matching garment found"})
-			return
-		}
-		product := products[0]
-
-		// Download garment image
-		garmentBytes, err := downloadExternalImage(ctx, product.ImageURL)
+		person, err := deps.Images.Download(ctx, st.ImageKey)
 		if err != nil {
-			slog.ErrorContext(ctx, "tryon: failed to download garment image", "error", err, "url", product.ImageURL)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to download garment image"})
+			slog.ErrorContext(ctx, "tryon: person download", "error", err, "key", st.ImageKey)
+			writeError(w, http.StatusInternalServerError, "failed to retrieve user image")
 			return
 		}
 
-		// Download person image from R2
-		personBytes, err := deps.ImageStore.Download(ctx, state.ImageKey)
-		if err != nil {
-			slog.ErrorContext(ctx, "tryon: failed to download person image", "error", err, "key", state.ImageKey)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to retrieve user image"})
-			return
+		timeout := deps.Timeout
+		if timeout <= 0 {
+			timeout = 60 * time.Second
 		}
-
-		// Call VTON provider with timeout
-		vtonCtx, vtonCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer vtonCancel()
-
-		vtonResult, err := deps.VTONProvider.Generate(vtonCtx, tryon.VTONRequest{
-			PersonImage:  personBytes,
-			GarmentImage: garmentBytes,
-			GarmentDesc:  req.GarmentDescription,
-			Category:     category,
-		})
+		vtonCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		out, err := deps.VTON.Generate(vtonCtx, tryon.VTONRequest{PersonImage: person, GarmentImage: garment, GarmentDesc: product.Title})
 		if err != nil {
 			if vtonCtx.Err() != nil {
-				writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "try-on generation timed out"})
+				writeError(w, http.StatusGatewayTimeout, "try-on generation timed out")
 				return
 			}
-			slog.ErrorContext(ctx, "tryon: VTON generation failed", "error", err, "session_id", sessionID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "try-on generation failed"})
+			slog.ErrorContext(ctx, "tryon: generation failed", "error", err, "session_id", sessionID)
+			writeError(w, http.StatusBadGateway, "try-on generation failed")
 			return
 		}
 
-		// Upload result to R2
-		resultKey := fmt.Sprintf("sessions/%s/tryon_%s_%d.jpg", sessionID, req.ActionID, time.Now().UnixMilli())
-		uploadOut, err := deps.ImageStore.Upload(ctx, storage.UploadInput{
-			Key:         resultKey,
-			Body:        bytes.NewReader(vtonResult.ImageBytes),
-			ContentType: vtonResult.MimeType,
-		})
+		key := fmt.Sprintf("sessions/%s/tryon_%s_%d.jpg", sessionID, sanitizeKeyPart(product.ID), time.Now().UnixMilli())
+		up, err := deps.Images.Upload(ctx, storage.UploadInput{Key: key, Body: bytes.NewReader(out.ImageBytes), ContentType: out.MimeType})
 		if err != nil {
-			slog.ErrorContext(ctx, "tryon: failed to upload result", "error", err, "session_id", sessionID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to store result image"})
+			slog.ErrorContext(ctx, "tryon: upload", "error", err, "session_id", sessionID)
+			writeError(w, http.StatusInternalServerError, "failed to store result image")
 			return
 		}
 
-		// Cache in session
-		tryonResult := session.TryOnResult{
-			ActionID:        req.ActionID,
-			TryOnImageURL:   uploadOut.URL,
-			GarmentName:     product.Name,
-			GarmentSource:   "catalog",
-			CatalogID:       product.ID,
-			GarmentImageURL: product.ImageURL,
-			GenerationMs:    vtonResult.GenerationMs,
-			ProviderName:    vtonResult.ProviderName,
-			CreatedAt:       time.Now(),
+		result := session.TryOnResult{
+			ProductID: product.ID, ActionID: req.ActionID, TryOnImageURL: up.URL, GarmentName: product.Title,
+			GarmentImageURL: product.Thumbnail, GenerationMs: out.GenerationMs, ProviderName: out.ProviderName, CreatedAt: time.Now(),
 		}
-		state.TryOnResults = append(state.TryOnResults, tryonResult)
-
-		if err := deps.Store.Save(state); err != nil {
-			slog.ErrorContext(ctx, "tryon: failed to save session", "error", err, "session_id", sessionID)
+		if err := deps.Store.Update(ctx, sessionID, func(cur *session.State) error {
+			cur.TryOnResults = append(cur.TryOnResults, result)
+			return nil
+		}); err != nil {
+			slog.ErrorContext(ctx, "tryon: save", "error", err, "session_id", sessionID)
 		}
 
-		slog.InfoContext(ctx, "tryon: generation complete",
-			"session_id", sessionID,
-			"action_id", req.ActionID,
-			"provider", vtonResult.ProviderName,
-			"generation_ms", vtonResult.GenerationMs,
-			"garment", product.Name,
-		)
-
-		writeJSON(w, http.StatusOK, TryOnResponse{
-			SessionID:    sessionID,
-			ActionID:     req.ActionID,
-			TryOnImageURL: uploadOut.URL,
-			GarmentUsed: GarmentInfo{
-				Name:      product.Name,
-				Source:    "catalog",
-				CatalogID: product.ID,
-				ImageURL:  product.ImageURL,
-			},
-			GenerationMs: vtonResult.GenerationMs,
-		})
+		writeJSON(w, http.StatusOK, tryOnResponse(sessionID, req.ActionID, product, up.URL, out.GenerationMs))
 	}
 }
 
-func downloadExternalImage(ctx context.Context, url string) ([]byte, error) {
-	dlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+func resolveProduct(st *session.State, req TryOnRequest) (shopping.Product, bool) {
+	if req.ProductID != "" {
+		p, ok := st.Products[req.ProductID]
+		return p, ok
 	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching image: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("image fetch returned %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading image body: %w", err)
-	}
-	return data, nil
-}
-
-func findTryOnResult(results []session.TryOnResult, actionID string) *session.TryOnResult {
-	for i := range results {
-		if results[i].ActionID == actionID {
-			return &results[i]
+	for _, a := range st.Recommendation.PriorityActions {
+		if a.ID == req.ActionID {
+			for _, p := range st.ProductsFor(a.ProductIDs) {
+				if p.Thumbnail != "" {
+					return p, true
+				}
+			}
 		}
 	}
-	return nil
+	// Fall back to the first shopping-list product with an image.
+	for _, item := range st.Recommendation.ShoppingList {
+		for _, p := range st.ProductsFor(item.ProductIDs) {
+			if p.Thumbnail != "" && strings.EqualFold(item.Slot, slotForAction(req)) {
+				return p, true
+			}
+		}
+	}
+	return shopping.Product{}, false
+}
+
+func slotForAction(req TryOnRequest) string {
+	text := strings.ToLower(req.ActionID + " " + req.GarmentDescription)
+	for _, kw := range []string{"pantal", "jeans", "chino", "short", "bermuda"} {
+		if strings.Contains(text, kw) {
+			return "lower_body"
+		}
+	}
+	for _, kw := range []string{"zapat", "tenis", "bota", "sneaker", "mocas"} {
+		if strings.Contains(text, kw) {
+			return "footwear"
+		}
+	}
+	return "upper_body"
+}
+
+func tryOnResponse(sessionID, actionID string, p shopping.Product, url string, ms int64) TryOnResponse {
+	return TryOnResponse{
+		SessionID: sessionID, ActionID: actionID, ProductID: p.ID, TryOnImageURL: url,
+		GarmentUsed:  GarmentInfo{Name: p.Title, Source: p.Store, CatalogID: p.ID, ImageURL: p.Thumbnail, Link: p.Link},
+		GenerationMs: ms,
+	}
+}
+
+func sanitizeKeyPart(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }

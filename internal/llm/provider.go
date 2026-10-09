@@ -1,84 +1,96 @@
+// Package llm defines a minimal chat-completion abstraction with tool calling.
 package llm
 
-import (
-	"context"
-)
+import "context"
 
+// Role identifies who authored a message.
 type Role string
 
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
 )
 
-// ContentBlock represents a single piece of content in a multimodal message
+// ContentBlock is one part of a multimodal message.
 type ContentBlock struct {
-	Type     string `json:"type"`      // "text" or "image_url"
-	Text     string `json:"text"`      // for type="text"
-	ImageURL string `json:"image_url"` // for type="image_url": "data:image/jpeg;base64,..."
+	Type     string `json:"type"`                // "text" | "image_url"
+	Text     string `json:"text,omitempty"`      // for type=text
+	ImageURL string `json:"image_url,omitempty"` // data URI or https URL
 }
 
-// Message represents a chat message. If ContentBlocks is non-empty, it takes
-// precedence over Content for multimodal requests.
+// ToolCall is a function invocation requested by the model.
+type ToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON object encoded as a string
+}
+
+// Message is one entry of a conversation, including tool traffic. It is
+// JSON-serialisable so a session can persist its full agent memory.
 type Message struct {
 	Role          Role           `json:"role"`
-	Content       string         `json:"content"`
+	Content       string         `json:"content,omitempty"`
 	ContentBlocks []ContentBlock `json:"content_blocks,omitempty"`
+	ToolCalls     []ToolCall     `json:"tool_calls,omitempty"`   // assistant only
+	ToolCallID    string         `json:"tool_call_id,omitempty"` // tool only
+	Name          string         `json:"name,omitempty"`         // tool only
 }
 
-type CompletionRequest struct {
-	Messages       []Message
-	MaxTokens      int
-	Temperature    float64
-	Tools          []Tool
-	ResponseFormat *ResponseFormat // optional: force structured output
+// Text builds a plain text message.
+func Text(role Role, text string) Message { return Message{Role: role, Content: text} }
+
+// ToolResult builds the message that answers a tool call.
+func ToolResult(callID, name, content string) Message {
+	return Message{Role: RoleTool, ToolCallID: callID, Name: name, Content: content}
 }
 
-// ResponseFormat controls the output format of the model.
-type ResponseFormat struct {
-	Type string `json:"type"` // "json_object" or "text"
-}
-
-type CompletionResponse struct {
-	Content   string
-	ToolCalls []ToolCall
-	Usage     Usage
-}
-
+// Tool describes a function the model may call.
 type Tool struct {
 	Name        string
 	Description string
-	Parameters  map[string]any
+	Parameters  map[string]any // JSON schema
 }
 
-type ToolCall struct {
-	ID        string
-	Name      string
-	Arguments string
+// ToolChoice controls whether the model must call a tool.
+type ToolChoice string
+
+const (
+	ToolChoiceAuto     ToolChoice = "auto"
+	ToolChoiceRequired ToolChoice = "required"
+	ToolChoiceNone     ToolChoice = "none"
+)
+
+// CompletionRequest is a provider-agnostic chat request.
+type CompletionRequest struct {
+	Messages    []Message
+	Tools       []Tool
+	ToolChoice  ToolChoice
+	MaxTokens   int
+	Temperature *float64
+	JSONMode    bool // ask for a JSON object response when the provider supports it
 }
 
+// Usage reports token consumption.
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
 }
 
-type StreamChunk struct {
-	Content string
-	Done    bool
-	Error   error
+// CompletionResponse is the model's answer.
+type CompletionResponse struct {
+	Content      string
+	ToolCalls    []ToolCall
+	FinishReason string
+	Usage        Usage
 }
 
-// Provider defines the interface for LLM providers (Anthropic, OpenAI, etc.)
+// Provider is a chat-completion backend.
 type Provider interface {
 	Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error)
-	StreamComplete(ctx context.Context, req CompletionRequest) (<-chan StreamChunk, error)
+	Name() string
 }
 
-// ModelTier represents the cost/capability tier for routing
-type ModelTier string
-
-const (
-	ModelTierPotent  ModelTier = "potent"  // Sonnet, GPT-4o - for complex reasoning
-	ModelTierEconomy ModelTier = "economy" // Haiku, 4o-mini - for simple tasks
-)
+// Float returns a pointer to v, handy for optional temperatures.
+func Float(v float64) *float64 { return &v }

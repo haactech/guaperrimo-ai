@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
@@ -119,13 +121,27 @@ func (g *GoogleVertexVTON) Generate(ctx context.Context, req VTONRequest) (*VTON
 	}, nil
 }
 
-// getAccessToken obtains a Google Cloud access token using Application Default Credentials.
+var (
+	credsOnce sync.Once
+	credsTS   oauth2.TokenSource
+	credsErr  error
+)
+
+// getAccessToken obtains a Google Cloud access token using Application
+// Default Credentials. The token source is cached and refreshes itself.
 func getAccessToken(ctx context.Context) (string, error) {
-	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
-	if err != nil {
-		return "", fmt.Errorf("finding default credentials: %w", err)
+	credsOnce.Do(func() {
+		creds, err := google.FindDefaultCredentials(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			credsErr = fmt.Errorf("finding default credentials: %w", err)
+			return
+		}
+		credsTS = oauth2.ReuseTokenSource(nil, creds.TokenSource)
+	})
+	if credsErr != nil {
+		return "", credsErr
 	}
-	token, err := creds.TokenSource.Token()
+	token, err := credsTS.Token()
 	if err != nil {
 		return "", fmt.Errorf("obtaining token: %w", err)
 	}

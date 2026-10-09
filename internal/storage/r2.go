@@ -70,8 +70,12 @@ func (s *R2Store) Upload(ctx context.Context, input UploadInput) (*UploadOutput,
 		return nil, fmt.Errorf("uploading to r2: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/%s", s.publicURL, input.Key)
-	return &UploadOutput{URL: url}, nil
+	return &UploadOutput{URL: s.URL(input.Key)}, nil
+}
+
+// URL returns the public URL for a key.
+func (s *R2Store) URL(key string) string {
+	return fmt.Sprintf("%s/%s", s.publicURL, key)
 }
 
 // Download retrieves the bytes of an object from R2.

@@ -2,9 +2,9 @@ package vision
 
 import "strings"
 
-// cleanJSON strips markdown code fences and repairs unescaped interior quotes
+// CleanJSON strips markdown code fences and repairs unescaped interior quotes
 // that LLMs sometimes produce in JSON output.
-func cleanJSON(s string) string {
+func CleanJSON(s string) string {
 	s = strings.TrimSpace(s)
 	// Strip code fences (```json ... ```)
 	if strings.HasPrefix(s, "```") {

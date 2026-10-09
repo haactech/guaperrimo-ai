@@ -1,76 +1,136 @@
 package session
 
 import (
-	"fmt"
+	"context"
+	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 )
 
-// SessionStore defines the interface for session persistence.
-type SessionStore interface {
-	Get(id string) (*SessionState, error)
-	Save(state *SessionState) error
-	Delete(id string) error
+// ErrNotFound is returned when a session does not exist or has expired.
+var ErrNotFound = errors.New("session not found")
+
+// Store persists sessions. Get returns a private copy; Update applies a
+// read-modify-write under a per-session lock so background jobs and request
+// handlers never clobber each other.
+type Store interface {
+	Get(ctx context.Context, id string) (*State, error)
+	Save(ctx context.Context, s *State) error
+	Update(ctx context.Context, id string, fn func(*State) error) error
+	Delete(ctx context.Context, id string) error
 }
 
-// InMemoryStore is a sync.Map-backed session store with TTL-based cleanup.
-type InMemoryStore struct {
-	data sync.Map
-	ttl  time.Duration
-	done chan struct{}
+// MemoryStore keeps JSON-encoded sessions in memory with a TTL.
+type MemoryStore struct {
+	mu    sync.Mutex
+	items map[string]memEntry
+	locks map[string]*sync.Mutex
+	ttl   time.Duration
+	done  chan struct{}
 }
 
-func NewInMemoryStore(ttl time.Duration) *InMemoryStore {
-	s := &InMemoryStore{
-		ttl:  ttl,
-		done: make(chan struct{}),
+type memEntry struct {
+	data      []byte
+	updatedAt time.Time
+}
+
+// NewMemoryStore creates a store whose sessions expire ttl after last write.
+func NewMemoryStore(ttl time.Duration) *MemoryStore {
+	s := &MemoryStore{
+		items: map[string]memEntry{},
+		locks: map[string]*sync.Mutex{},
+		ttl:   ttl,
+		done:  make(chan struct{}),
 	}
 	go s.cleanup()
 	return s
 }
 
-func (s *InMemoryStore) Get(id string) (*SessionState, error) {
-	v, ok := s.data.Load(id)
+func (s *MemoryStore) Get(_ context.Context, id string) (*State, error) {
+	s.mu.Lock()
+	e, ok := s.items[id]
+	if ok && s.ttl > 0 && time.Since(e.updatedAt) > s.ttl {
+		delete(s.items, id)
+		ok = false
+	}
+	s.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("session not found or expired")
+		return nil, ErrNotFound
 	}
-	state := v.(*SessionState)
-	if time.Since(state.UpdatedAt) > s.ttl {
-		s.data.Delete(id)
-		return nil, fmt.Errorf("session not found or expired")
+	var st State
+	if err := json.Unmarshal(e.data, &st); err != nil {
+		return nil, err
 	}
-	return state, nil
+	return &st, nil
 }
 
-func (s *InMemoryStore) Save(state *SessionState) error {
-	state.UpdatedAt = time.Now()
-	s.data.Store(state.ID, state)
+func (s *MemoryStore) Save(_ context.Context, st *State) error {
+	st.UpdatedAt = time.Now()
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.items[st.ID] = memEntry{data: data, updatedAt: st.UpdatedAt}
+	s.mu.Unlock()
 	return nil
 }
 
-func (s *InMemoryStore) Delete(id string) error {
-	s.data.Delete(id)
+func (s *MemoryStore) Update(ctx context.Context, id string, fn func(*State) error) error {
+	l := s.lockFor(id)
+	l.Lock()
+	defer l.Unlock()
+	st, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := fn(st); err != nil {
+		return err
+	}
+	return s.Save(ctx, st)
+}
+
+func (s *MemoryStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	delete(s.items, id)
+	delete(s.locks, id)
+	s.mu.Unlock()
 	return nil
 }
 
-func (s *InMemoryStore) Stop() {
-	close(s.done)
+// Stop ends the cleanup goroutine.
+func (s *MemoryStore) Stop() { close(s.done) }
+
+func (s *MemoryStore) lockFor(id string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.locks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		s.locks[id] = l
+	}
+	return l
 }
 
-func (s *InMemoryStore) cleanup() {
+func (s *MemoryStore) cleanup() {
+	if s.ttl <= 0 {
+		return
+	}
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			now := time.Now()
-			s.data.Range(func(key, value any) bool {
-				state := value.(*SessionState)
-				if now.Sub(state.UpdatedAt) > s.ttl {
-					s.data.Delete(key)
+			s.mu.Lock()
+			for id, e := range s.items {
+				if now.Sub(e.updatedAt) > s.ttl {
+					delete(s.items, id)
+					delete(s.locks, id)
 				}
-				return true
-			})
+			}
+			s.mu.Unlock()
 		case <-s.done:
 			return
 		}
