@@ -1,29 +1,20 @@
 package tryon
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"stylerag/internal/session"
-	"stylerag/internal/shopping"
-	"stylerag/internal/storage"
 )
 
-const maxGarmentBytes = 10 << 20
-
-// LookGenerator renders the agent's looks on the user's photo in the background.
+// LookGenerator renders the agent's looks through the shared Renderer so
+// matrix swipes and look cards reuse the same images.
 type LookGenerator struct {
-	Store       session.Store
-	Images      storage.ImageStore
-	VTON        VTONProvider
-	Timeout     time.Duration // per look
-	HTTPClient  *http.Client
-	Concurrency int
+	Store    session.Store
+	Renderer *Renderer
 }
 
 // GenerateAll renders every look of the session. Safe to run in a goroutine.
@@ -36,94 +27,83 @@ func (g *LookGenerator) GenerateAll(ctx context.Context, sessionID string) {
 	if len(st.Looks) == 0 || st.ImageKey == "" {
 		return
 	}
-	person, err := g.Images.Download(ctx, st.ImageKey)
-	if err != nil {
-		slog.ErrorContext(ctx, "looks: download person image", "error", err, "session_id", sessionID)
-		return
-	}
-
-	conc := g.Concurrency
-	if conc <= 0 {
-		conc = 2
-	}
-	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
 	for _, look := range st.Looks {
 		wg.Add(1)
 		go func(l session.Look) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			timeout := g.Timeout
-			if timeout <= 0 {
-				timeout = 90 * time.Second
-			}
-			lookCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			g.generateLook(lookCtx, sessionID, l, st.Products, person)
+			g.Renderer.sem <- struct{}{}
+			defer func() { <-g.Renderer.sem }()
+			g.generateLook(ctx, sessionID, l, st)
 		}(look)
 	}
 	wg.Wait()
 	slog.InfoContext(ctx, "looks: all done", "session_id", sessionID, "count", len(st.Looks))
 }
 
-func (g *LookGenerator) generateLook(ctx context.Context, sessionID string, look session.Look, products map[string]shopping.Product, person []byte) {
+func (g *LookGenerator) generateLook(ctx context.Context, sessionID string, look session.Look, st *session.State) {
 	start := time.Now()
+	pieces := comboFromLook(look, st)
 	g.setStatus(ctx, sessionID, look.ID, session.LookStatusGenerating)
 
-	current := person
-	var pieces []session.LookPieceResult
-	var lastURL string
-
-	for _, piece := range orderPieces(look.Pieces) {
-		product, ok := products[piece.ProductID]
-		res := session.LookPieceResult{Slot: piece.Slot, ProductID: piece.ProductID, ProductName: product.Title, ProductImageURL: product.Thumbnail}
-		if !ok || product.Thumbnail == "" {
-			slog.WarnContext(ctx, "looks: piece without product image", "look_id", look.ID, "slot", piece.Slot)
-			pieces = append(pieces, res)
-			continue
-		}
-		garment, err := DownloadImage(ctx, g.HTTPClient, product.Thumbnail, maxGarmentBytes)
-		if err != nil {
-			slog.WarnContext(ctx, "looks: garment download failed", "error", err, "look_id", look.ID, "slot", piece.Slot)
-			pieces = append(pieces, res)
-			continue
-		}
-		out, err := g.VTON.Generate(ctx, VTONRequest{PersonImage: current, GarmentImage: garment, GarmentDesc: product.Title, Category: piece.Slot})
-		if err != nil {
-			slog.WarnContext(ctx, "looks: vton failed", "error", err, "look_id", look.ID, "slot", piece.Slot)
-			pieces = append(pieces, res)
-			continue
-		}
-		key := fmt.Sprintf("sessions/%s/look_%s_%s_%d.jpg", sessionID, look.ID, piece.Slot, time.Now().UnixMilli())
-		up, err := g.Images.Upload(ctx, storage.UploadInput{Key: key, Body: bytes.NewReader(out.ImageBytes), ContentType: out.MimeType})
-		if err != nil {
-			slog.WarnContext(ctx, "looks: upload failed", "error", err, "look_id", look.ID, "slot", piece.Slot)
-			res.GenerationMs = out.GenerationMs
-			pieces = append(pieces, res)
-			continue
-		}
-		current = out.ImageBytes
-		lastURL = up.URL
-		res.TryOnImageURL = up.URL
-		res.GenerationMs = out.GenerationMs
-		pieces = append(pieces, res)
-	}
-
-	result := session.LookResult{
-		LookID:        look.ID,
-		Status:        session.LookStatusReady,
-		Pieces:        pieces,
-		FinalImageURL: lastURL,
-		GenerationMs:  time.Since(start).Milliseconds(),
-		CreatedAt:     time.Now(),
-	}
-	if lastURL == "" {
+	result := session.LookResult{LookID: look.ID, Status: session.LookStatusReady, CreatedAt: time.Now()}
+	if len(pieces) == 0 {
 		result.Status = session.LookStatusFailed
-		result.ErrorMessage = "no se pudo generar ninguna prenda del look"
+		result.ErrorMessage = "el look no tiene prendas con imagen"
+		g.setResult(ctx, sessionID, result)
+		return
+	}
+
+	renderCtx, cancel := context.WithTimeout(ctx, g.Renderer.Timeout*time.Duration(len(pieces))+30*time.Second)
+	defer cancel()
+	final, err := g.Renderer.Render(renderCtx, sessionID, pieces)
+
+	cur, _ := g.Store.Get(ctx, sessionID)
+	for i, piece := range pieces {
+		pr := session.LookPieceResult{Slot: piece.Slot, ProductID: piece.ProductID}
+		if p, ok := st.Products[piece.ProductID]; ok {
+			pr.ProductName, pr.ProductImageURL = p.Title, p.Thumbnail
+		}
+		if cur != nil {
+			if rd, ok := cur.Renders[session.ComboKey(pieces[:i+1])]; ok && rd.Status == session.LookStatusReady {
+				pr.TryOnImageURL, pr.GenerationMs = rd.ImageURL, rd.GenerationMs
+			}
+		}
+		result.Pieces = append(result.Pieces, pr)
+	}
+	result.FinalImageURL = final.ImageURL
+	result.GenerationMs = time.Since(start).Milliseconds()
+	if err != nil || final.Status != session.LookStatusReady {
+		// Keep whatever prefix rendered; mark failed only when nothing did.
+		if final.ImageURL == "" {
+			for i := len(result.Pieces) - 1; i >= 0; i-- {
+				if result.Pieces[i].TryOnImageURL != "" {
+					result.FinalImageURL = result.Pieces[i].TryOnImageURL
+					break
+				}
+			}
+		}
+		if result.FinalImageURL == "" {
+			result.Status = session.LookStatusFailed
+			result.ErrorMessage = "no se pudo generar ninguna prenda del look"
+		}
 	}
 	g.setResult(ctx, sessionID, result)
 	slog.InfoContext(ctx, "looks: look done", "session_id", sessionID, "look_id", look.ID, "status", result.Status, "elapsed", time.Since(start))
+}
+
+// comboFromLook orders the look's renderable pieces for chaining.
+func comboFromLook(look session.Look, st *session.State) []session.ComboPiece {
+	var out []session.ComboPiece
+	for _, p := range look.Pieces {
+		prod, ok := st.Products[p.ProductID]
+		if !ok || (prod.Thumbnail == "" && prod.LargeImage == "") || session.SlotRank(p.Slot) >= len(session.SlotOrder) {
+			continue
+		}
+		out = append(out, session.ComboPiece{Slot: p.Slot, ProductID: p.ProductID})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return session.SlotRank(out[i].Slot) < session.SlotRank(out[j].Slot) })
+	return out
 }
 
 func (g *LookGenerator) setStatus(ctx context.Context, sessionID, lookID string, status session.LookStatus) {
@@ -156,24 +136,4 @@ func (g *LookGenerator) setResult(ctx context.Context, sessionID string, result 
 	if err != nil {
 		slog.ErrorContext(ctx, "looks: save result", "error", err, "session_id", sessionID)
 	}
-}
-
-// orderPieces puts upper_body first so lower_body chains on top of it.
-func orderPieces(pieces []session.LookPiece) []session.LookPiece {
-	rank := map[string]int{"upper_body": 0, "outerwear": 1, "lower_body": 2, "footwear": 3}
-	ordered := make([]session.LookPiece, len(pieces))
-	copy(ordered, pieces)
-	for i := 1; i < len(ordered); i++ {
-		for j := i; j > 0 && rankOf(rank, ordered[j].Slot) < rankOf(rank, ordered[j-1].Slot); j-- {
-			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
-		}
-	}
-	return ordered
-}
-
-func rankOf(rank map[string]int, slot string) int {
-	if r, ok := rank[slot]; ok {
-		return r
-	}
-	return 9
 }

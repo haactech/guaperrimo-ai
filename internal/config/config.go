@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -13,9 +14,11 @@ import (
 
 // Config is the full runtime configuration.
 type Config struct {
-	Port     string
-	LogLevel slog.Level
-	APIKey   string // optional shared secret for the iOS app
+	Port          string
+	LogLevel      slog.Level
+	APIKey        string        // optional shared secret for the iOS app
+	PublicBaseURL string        // how clients reach this server, e.g. http://192.168.100.39:8080
+	ImageURLTTL   time.Duration // validity of signed image links
 
 	// LLM: one OpenAI-compatible provider for chat+tools and one model for vision.
 	LLMProvider string // mistral | moonshot | openai
@@ -48,11 +51,15 @@ type Config struct {
 	VTONBaseSteps         int
 	VTONTimeout           time.Duration
 	LookGenerationTimeout time.Duration
-	LookConcurrency       int
+	RenderConcurrency     int
+	PrefetchConcurrency   int
+	MatrixMaxPerSlot      int
+	ResolveProductDetails bool
 
 	// Agent
 	AgentMaxSteps     int
 	AgentMaxQuestions int
+	AgentMaxSearches  int
 	AgentTurnTimeout  time.Duration
 }
 
@@ -64,9 +71,11 @@ func Load() *Config {
 	baseURL, model, apiKey := providerDefaults(provider)
 
 	return &Config{
-		Port:     getEnv("PORT", "8080"),
-		LogLevel: parseLogLevel(getEnv("LOG_LEVEL", "info")),
-		APIKey:   getEnv("API_KEY", ""),
+		Port:          getEnv("PORT", "8080"),
+		LogLevel:      parseLogLevel(getEnv("LOG_LEVEL", "info")),
+		APIKey:        getEnv("API_KEY", ""),
+		PublicBaseURL: strings.TrimRight(getEnv("PUBLIC_BASE_URL", ""), "/"),
+		ImageURLTTL:   parseDuration(getEnv("IMAGE_URL_TTL", "720h"), 30*24*time.Hour),
 
 		LLMProvider: provider,
 		LLMAPIKey:   getEnv("LLM_API_KEY", apiKey),
@@ -94,10 +103,14 @@ func Load() *Config {
 		VTONBaseSteps:         getEnvInt("VTON_BASE_STEPS", 20),
 		VTONTimeout:           parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
 		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
-		LookConcurrency:       getEnvInt("LOOK_CONCURRENCY", 2),
+		RenderConcurrency:     getEnvInt("RENDER_CONCURRENCY", 3),
+		PrefetchConcurrency:   getEnvInt("RENDER_PREFETCH_CONCURRENCY", 2),
+		MatrixMaxPerSlot:      getEnvInt("MATRIX_MAX_PER_SLOT", 3),
+		ResolveProductDetails: getEnv("RESOLVE_PRODUCT_DETAILS", "true") != "false",
 
 		AgentMaxSteps:     getEnvInt("AGENT_MAX_STEPS", 12),
 		AgentMaxQuestions: getEnvInt("AGENT_MAX_QUESTIONS", 6),
+		AgentMaxSearches:  getEnvInt("AGENT_MAX_SEARCHES", 8),
 		AgentTurnTimeout:  parseDuration(getEnv("AGENT_TURN_TIMEOUT", "150s"), 150*time.Second),
 	}
 }
@@ -219,4 +232,29 @@ func loadDotenv(path string) {
 			os.Setenv(k, v)
 		}
 	}
+}
+
+// DefaultPublicBaseURL guesses how devices on the LAN reach this server when
+// PUBLIC_BASE_URL is not set: the first non-loopback IPv4 address plus the port.
+func DefaultPublicBaseURL(port string) string {
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, ifc := range ifaces {
+			if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := ifc.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, a := range addrs {
+				ipn, ok := a.(*net.IPNet)
+				if !ok || ipn.IP.To4() == nil || ipn.IP.IsLoopback() || ipn.IP.IsLinkLocalUnicast() {
+					continue
+				}
+				return "http://" + ipn.IP.String() + ":" + port
+			}
+		}
+	}
+	return "http://localhost:" + port
 }

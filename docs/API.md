@@ -132,3 +132,72 @@ o, para compatibilidad con la app actual, `{"action_id": "camisa_lino", "garment
 
 Errores: `404` producto no encontrado, `409` sin recomendación o sin foto,
 `422` producto sin imagen, `502` descarga o generación fallida, `504` timeout.
+
+## Probador mix & match
+
+Disponible después de la recomendación. La cuadrícula existe aunque el try-on
+esté apagado; en ese caso `tryon_available` es `false` y solo se ven las fotos
+de producto.
+
+### `GET /session/{id}/matrix`
+
+```json
+{
+  "session_id": "…",
+  "tryon_available": true,
+  "base_image_url": "https://…/welcome_….jpg",
+  "slots": [
+    {"slot": "upper_body", "label": "Arriba", "options": [{ …Product, "why": "alarga el torso", "priority": 1 }]},
+    {"slot": "lower_body", "label": "Abajo", "options": [ … ]},
+    {"slot": "footwear",   "label": "Calzado", "options": [ … ]}
+  ],
+  "default": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"},
+  "renders": [{"key": "p_a|p_b|p_c", "selection": {…}, "status": "ready", "image_url": "https://…", "generation_time_ms": 21000}],
+  "saved_looks": [SavedLook]
+}
+```
+
+Las filas van en orden de capas: `upper_body`, `outerwear`, `lower_body`,
+`footwear`. `renders` solo lista combinaciones completas; el servidor cachea
+también los prefijos, por eso cambiar una fila suele costar una sola imagen.
+Al terminar la recomendación se pre-generan la combinación por defecto y todas
+las que están a un swipe de distancia.
+
+### `POST /session/{id}/matrix/render`
+
+```json
+{"selection": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"}}
+```
+
+Las filas que falten toman el valor por defecto. Respuestas:
+
+- `200` con `status: "ready"` e `image_url` si ya existe.
+- `202` con `status: "pending" | "generating"` si se está generando. Al pedirla,
+  el servidor también encola las combinaciones vecinas. La app repite el POST
+  o consulta `GET /matrix` cada 2 o 3 segundos y muestra shimmer mientras tanto.
+- `400` selección inválida, `404` sin cuadrícula, `409` sin foto, `503` try-on apagado.
+
+Una imagen tarda entre 15 y 45 s con Vertex. Las combinaciones ya calculadas
+regresan al instante.
+
+### `GET /session/{id}/saved-looks` y `POST /session/{id}/saved-looks`
+
+Guardan la combinación elegida con su explicación para ir de compras.
+
+```json
+{"selection": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"}, "note": "para la boda del sábado"}
+```
+
+```json
+{
+  "id": "saved_…", "key": "p_a|p_b|p_c", "selection": {…}, "image_url": "https://…",
+  "items": [{"slot": "upper_body", "product": Product, "why": "alarga el torso"}],
+  "total_mxn": 1448,
+  "stores": [Store],
+  "note": "…", "created_at": "…"
+}
+```
+
+`items[].product` incluye `link` al comercio y `availability` cuando el
+servidor resolvió el detalle del producto, y `nearby_store` si hay sucursal
+cerca. Guardar la misma combinación dos veces la reemplaza.

@@ -164,6 +164,10 @@ type State struct {
 	LookResults    []LookResult    `json:"look_results,omitempty"`
 	TryOnResults   []TryOnResult   `json:"tryon_results,omitempty"`
 
+	Matrix     *Matrix           `json:"matrix,omitempty"`
+	Renders    map[string]Render `json:"renders,omitempty"` // combo key -> try-on image
+	SavedLooks []SavedLook       `json:"saved_looks,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

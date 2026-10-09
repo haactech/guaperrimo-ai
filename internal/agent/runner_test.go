@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"stylerag/internal/llm"
 	"stylerag/internal/session"
@@ -213,5 +215,83 @@ func TestQuestionCapNudgesToFinish(t *testing.T) {
 	}
 	if !strings.Contains(r.systemPrompt(st, r.Now()), "LÍMITE ALCANZADO") {
 		t.Fatal("expected finish nudge after the question cap")
+	}
+}
+
+// slowShopping delays searches and counts them, to prove they run concurrently.
+type slowShopping struct {
+	shopping.Fake
+	delay time.Duration
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *slowShopping) SearchProducts(ctx context.Context, q shopping.ProductQuery) ([]shopping.Product, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	time.Sleep(s.delay)
+	return s.Fake.SearchProducts(ctx, q)
+}
+
+func TestSearchesRunInParallelAndAreCapped(t *testing.T) {
+	shop := &slowShopping{delay: 80 * time.Millisecond}
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(
+			call("s1", toolSearchProducts, map[string]any{"query": "camisa hombre"}),
+			call("s2", toolSearchProducts, map[string]any{"query": "pantalón hombre"}),
+			call("s3", toolSearchProducts, map[string]any{"query": "zapatos hombre"}),
+			call("s4", toolSearchProducts, map[string]any{"query": "cinturón hombre"}),
+		),
+		calls(call("a1", toolAskUser, map[string]any{"message": "¿Listo?", "input_mode": "voice"})),
+	}}
+	r := NewRunner(model, Deps{Shopping: shop, MaxSearchesPerTurn: 3}, 4, 4)
+	st := newState()
+
+	start := time.Now()
+	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "voice", Text: "busca todo"}); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("searches should run concurrently, took %v", elapsed)
+	}
+	if shop.calls != 3 {
+		t.Fatalf("cap of 3 searches not enforced, provider called %d times", shop.calls)
+	}
+	refused := 0
+	for _, id := range []string{"s1", "s2", "s3", "s4"} {
+		if strings.Contains(toolMessage(st, id), "límite de 3") {
+			refused++
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("exactly one of four concurrent searches should be refused, got %d", refused)
+	}
+	// tool results are appended in call order right after the assistant message
+	var order []string
+	for _, m := range st.Messages {
+		if m.Role == llm.RoleTool {
+			order = append(order, m.ToolCallID)
+		}
+	}
+	if strings.Join(order, ",") != "s1,s2,s3,s4,a1" {
+		t.Fatalf("tool results out of order: %v", order)
+	}
+}
+
+func TestSearchRefusedNearDeadline(t *testing.T) {
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("s1", toolSearchProducts, map[string]any{"query": "camisa hombre"})),
+		calls(call("a1", toolAskUser, map[string]any{"message": "¿Seguimos?", "input_mode": "voice"})),
+	}}
+	r := NewRunner(model, Deps{Shopping: shopping.Fake{}, MinSearchTime: time.Minute}, 4, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	st := newState()
+	if _, err := r.RunTurn(ctx, st, TurnInput{Kind: "voice", Text: "busca"}); err != nil {
+		t.Fatal(err)
+	}
+	if msg := toolMessage(st, "s1"); !strings.Contains(msg, "no queda tiempo") {
+		t.Fatalf("search near the deadline should be refused, got %s", msg)
 	}
 }

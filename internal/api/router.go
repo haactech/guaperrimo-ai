@@ -4,6 +4,7 @@ package api
 import (
 	"crypto/subtle"
 	"net/http"
+	"strings"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -17,7 +18,9 @@ type Deps struct {
 	Images storage.ImageStore
 	Store  session.Store
 	Chat   *ChatDeps
-	TryOn  *TryOnDeps // nil = disabled
+	TryOn  *TryOnDeps          // nil = disabled
+	Matrix *MatrixDeps         // Renderer may be nil
+	Signed *storage.SignedURLs // nil = no image proxy
 }
 
 // NewRouter builds the HTTP handler.
@@ -25,6 +28,9 @@ func NewRouter(d Deps) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
+	if d.Signed != nil {
+		mux.HandleFunc("GET /images/", imagesHandler(d.Signed))
+	}
 	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(d.Images))
 	mux.HandleFunc("POST /session/{id}/chat", chatHandler(d.Chat))
 	mux.HandleFunc("GET /session/{id}/recommendation", recommendationHandler(d.Store))
@@ -32,6 +38,13 @@ func NewRouter(d Deps) http.Handler {
 	if d.TryOn != nil {
 		mux.HandleFunc("POST /session/{id}/tryon", tryonHandler(d.TryOn))
 	}
+	if d.Matrix == nil {
+		d.Matrix = &MatrixDeps{Store: d.Store}
+	}
+	mux.HandleFunc("GET /session/{id}/matrix", matrixHandler(d.Matrix))
+	mux.HandleFunc("POST /session/{id}/matrix/render", renderHandler(d.Matrix))
+	mux.HandleFunc("GET /session/{id}/saved-looks", savedLooksHandler(d.Store))
+	mux.HandleFunc("POST /session/{id}/saved-looks", saveLookHandler(d.Matrix))
 
 	var handler http.Handler = mux
 	handler = APIKeyMiddleware(d.APIKey, handler)
@@ -55,7 +68,7 @@ func APIKeyMiddleware(key string, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
+		if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/images/") {
 			next.ServeHTTP(w, r)
 			return
 		}

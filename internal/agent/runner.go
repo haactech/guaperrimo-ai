@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -28,11 +29,13 @@ var ErrMaxSteps = errors.New("agent: max steps reached without a reply to the us
 
 // Deps are the external capabilities the tools need.
 type Deps struct {
-	Shopping        shopping.Provider
-	DefaultRadiusM  int
-	DefaultLocation string // free-text origin for product search when the user's is unknown
-	MaxProducts     int    // per search_products call
-	MaxStores       int    // per find_nearby_stores call
+	Shopping           shopping.Provider
+	DefaultRadiusM     int
+	DefaultLocation    string        // free-text origin for product search when the user's is unknown
+	MaxProducts        int           // per search_products call
+	MaxStores          int           // per find_nearby_stores call
+	MaxSearchesPerTurn int           // search_products calls allowed in one turn
+	MinSearchTime      time.Duration // refuse a search when less than this remains before the turn deadline
 }
 
 // Runner executes one conversational turn.
@@ -54,6 +57,12 @@ func NewRunner(p llm.Provider, deps Deps, maxSteps, maxQuestions int) *Runner {
 	}
 	if deps.MaxStores <= 0 {
 		deps.MaxStores = 8
+	}
+	if deps.MaxSearchesPerTurn <= 0 {
+		deps.MaxSearchesPerTurn = 8
+	}
+	if deps.MinSearchTime <= 0 {
+		deps.MinSearchTime = 25 * time.Second
 	}
 	if maxSteps <= 0 {
 		maxSteps = 10
@@ -79,6 +88,18 @@ type TurnOutput struct {
 	Steps     int
 	ToolsUsed []string
 }
+
+// turnState is shared by the tools of one turn. Tools run concurrently when
+// the model requests several at once, so every access to st goes through mu.
+type turnState struct {
+	mu             sync.Mutex
+	st             *session.State
+	now            time.Time
+	searches       int
+	finishAttempts int
+}
+
+func isTerminal(name string) bool { return name == toolAskUser || name == toolFinish }
 
 // RunTurn appends the user input, loops over tool calls until the model ends
 // the turn, and mutates st in place (messages, profile, products, result).
@@ -108,7 +129,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 	st.Turn++
 
 	out := &TurnOutput{}
-	finishAttempts := 0
+	ts := &turnState{st: st, now: now}
 
 	for step := 0; step < r.MaxSteps; step++ {
 		msgs := make([]llm.Message, 0, len(st.Messages)+1)
@@ -141,14 +162,42 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 			return out, nil
 		}
 
+		// Non-terminal tools (searches, lookups) run concurrently; terminal
+		// tools run afterwards, in order, and only the first one counts.
+		results := make([]string, len(resp.ToolCalls))
+		var wg sync.WaitGroup
+		for i, call := range resp.ToolCalls {
+			if isTerminal(call.Name) {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, call llm.ToolCall) {
+				defer wg.Done()
+				results[i], _ = r.execTool(ctx, ts, call)
+			}(i, call)
+		}
+		wg.Wait()
+		ts.annotateProducts()
+
 		var terminal *TurnOutput
-		for _, call := range resp.ToolCalls {
-			result, term := r.execTool(ctx, st, call, &finishAttempts, now)
-			st.Messages = append(st.Messages, llm.ToolResult(call.ID, call.Name, result))
+		for i, call := range resp.ToolCalls {
+			if !isTerminal(call.Name) {
+				continue
+			}
+			if terminal != nil {
+				results[i] = errJSON("ignorado: el turno ya terminó con la herramienta anterior")
+				continue
+			}
+			results[i], terminal = r.execTool(ctx, ts, call)
+		}
+
+		for i, call := range resp.ToolCalls {
+			st.Messages = append(st.Messages, llm.ToolResult(call.ID, call.Name, results[i]))
 			out.ToolsUsed = append(out.ToolsUsed, call.Name)
-			slog.InfoContext(ctx, "agent: tool", "session_id", st.ID, "tool", call.Name, "terminal", term != nil)
-			if term != nil && terminal == nil {
-				terminal = term
+			if strings.HasPrefix(results[i], `{"error"`) {
+				slog.WarnContext(ctx, "agent: tool error", "session_id", st.ID, "tool", call.Name, "result", truncate(results[i], 300))
+			} else {
+				slog.InfoContext(ctx, "agent: tool", "session_id", st.ID, "tool", call.Name, "terminal", isTerminal(call.Name))
 			}
 		}
 		if terminal != nil {
@@ -159,6 +208,18 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		}
 	}
 	return nil, ErrMaxSteps
+}
+
+// annotateProducts re-links every product to the closest matching store. It
+// runs after each batch so searches that finished before the store lookup
+// still get their nearby_store.
+func (ts *turnState) annotateProducts() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	for id, p := range ts.st.Products {
+		p.NearbyStore = shopping.MatchNearbyStore(p.Store, ts.st.Stores)
+		ts.st.Products[id] = p
+	}
 }
 
 // --- tool arguments ---
@@ -270,9 +331,17 @@ func toJSON(v any) string {
 
 func errJSON(msg string) string { return toJSON(map[string]string{"error": msg}) }
 
+// timeLeft reports how long the turn may still run; a huge value when unbounded.
+func timeLeft(ctx context.Context) time.Duration {
+	if d, ok := ctx.Deadline(); ok {
+		return time.Until(d)
+	}
+	return 24 * time.Hour
+}
+
 // execTool runs one tool. The string is fed back to the model; a non-nil
-// TurnOutput means the turn is over.
-func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolCall, finishAttempts *int, now time.Time) (string, *TurnOutput) {
+// TurnOutput means the turn is over. Network calls happen outside the lock.
+func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall) (string, *TurnOutput) {
 	args := strings.TrimSpace(call.Arguments)
 	if args == "" {
 		args = "{}"
@@ -283,31 +352,45 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
-		applyProfile(&st.Profile, a)
-		return toJSON(map[string]any{"ok": true, "profile": st.Profile}), nil
+		ts.mu.Lock()
+		applyProfile(&ts.st.Profile, a)
+		res := toJSON(map[string]any{"ok": true, "profile": ts.st.Profile})
+		ts.mu.Unlock()
+		return res, nil
 
 	case toolSetLocation:
 		var a setLocationArgs
 		if err := json.Unmarshal([]byte(args), &a); err != nil || strings.TrimSpace(a.Query) == "" {
 			return errJSON("falta query"), nil
 		}
-		if st.Location != nil && st.Location.Source == "device" {
-			return toJSON(map[string]any{"ok": true, "location": st.Location, "note": "ya conocida por el dispositivo"}), nil
+		ts.mu.Lock()
+		if ts.st.Location != nil && ts.st.Location.Source == "device" {
+			res := toJSON(map[string]any{"ok": true, "location": ts.st.Location, "note": "ya conocida por el dispositivo"})
+			ts.mu.Unlock()
+			return res, nil
 		}
+		ts.mu.Unlock()
 		geo, err := r.Deps.Shopping.Geocode(ctx, a.Query)
 		if err != nil {
 			slog.WarnContext(ctx, "agent: geocode failed", "query", a.Query, "error", err)
 			return errJSON("no pude ubicar ese lugar; pide al usuario colonia y ciudad más específicas"), nil
 		}
-		st.Location = &session.Location{Lat: geo.Lat, Lng: geo.Lng, Label: geo.Label, Source: "conversation"}
-		return toJSON(map[string]any{"ok": true, "location": st.Location}), nil
+		ts.mu.Lock()
+		ts.st.Location = &session.Location{Lat: geo.Lat, Lng: geo.Lng, Label: geo.Label, Source: "conversation"}
+		res := toJSON(map[string]any{"ok": true, "location": ts.st.Location})
+		ts.mu.Unlock()
+		return res, nil
 
 	case toolFindStores:
 		var a findStoresArgs
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
-		if st.Location == nil {
+		ts.mu.Lock()
+		loc := ts.st.Location
+		profileRadius := ts.st.Profile.RadiusM
+		ts.mu.Unlock()
+		if loc == nil {
 			return errJSON("ubicación desconocida: pregunta colonia o zona y ciudad, luego llama set_location"), nil
 		}
 		query := strings.TrimSpace(a.Query)
@@ -316,12 +399,12 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		}
 		radius := a.RadiusM
 		if radius <= 0 {
-			radius = st.Profile.RadiusM
+			radius = profileRadius
 		}
 		if radius <= 0 {
 			radius = r.Deps.DefaultRadiusM
 		}
-		stores, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: query, Lat: st.Location.Lat, Lng: st.Location.Lng, RadiusM: radius, Limit: r.Deps.MaxStores})
+		stores, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: query, Lat: loc.Lat, Lng: loc.Lng, RadiusM: radius, Limit: r.Deps.MaxStores})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: find stores failed", "error", err)
 			return errJSON("la búsqueda de tiendas falló; continúa con productos en línea"), nil
@@ -329,16 +412,14 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		usedRadius := radius
 		if len(stores) < 3 && radius < 5000 {
 			usedRadius = 5000
-			more, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: query, Lat: st.Location.Lat, Lng: st.Location.Lng, RadiusM: usedRadius, Limit: r.Deps.MaxStores})
+			more, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: query, Lat: loc.Lat, Lng: loc.Lng, RadiusM: usedRadius, Limit: r.Deps.MaxStores})
 			if err == nil {
 				stores = mergeStores(stores, more)
 			}
 		}
-		st.AddStores(stores)
-		for id, p := range st.Products {
-			p.NearbyStore = shopping.MatchNearbyStore(p.Store, st.Stores)
-			st.Products[id] = p
-		}
+		ts.mu.Lock()
+		ts.st.AddStores(stores)
+		ts.mu.Unlock()
 		return toJSON(map[string]any{"radius_used_m": usedRadius, "count": len(stores), "stores": compactStores(stores)}), nil
 
 	case toolSearchProducts:
@@ -346,6 +427,18 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		if err := json.Unmarshal([]byte(args), &a); err != nil || strings.TrimSpace(a.Query) == "" {
 			return errJSON("falta query"), nil
 		}
+		ts.mu.Lock()
+		if ts.searches >= r.Deps.MaxSearchesPerTurn {
+			ts.mu.Unlock()
+			return errJSON(fmt.Sprintf("límite de %d búsquedas por turno alcanzado; usa los productos que ya tienes y llama finish_recommendation", r.Deps.MaxSearchesPerTurn)), nil
+		}
+		if timeLeft(ctx) < r.Deps.MinSearchTime {
+			ts.mu.Unlock()
+			return errJSON("no queda tiempo para más búsquedas; llama finish_recommendation con los productos que ya tienes"), nil
+		}
+		ts.searches++
+		ts.mu.Unlock()
+
 		query := strings.TrimSpace(a.Query)
 		if s := strings.TrimSpace(a.Store); s != "" {
 			query = s + " " + query
@@ -354,14 +447,19 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		if limit <= 0 || limit > r.Deps.MaxProducts {
 			limit = r.Deps.MaxProducts
 		}
-		loc := r.Deps.DefaultLocation
-		products, err := r.Deps.Shopping.SearchProducts(ctx, shopping.ProductQuery{Query: query, MaxPrice: a.MaxPriceMXN, Location: loc, Limit: limit})
+		products, err := r.Deps.Shopping.SearchProducts(ctx, shopping.ProductQuery{Query: query, MaxPrice: a.MaxPriceMXN, Location: r.Deps.DefaultLocation, Limit: limit})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: product search failed", "query", query, "error", err)
-			return errJSON("la búsqueda falló; intenta con otra descripción"), nil
+			return errJSON("la búsqueda falló o tardó demasiado; si ya tienes productos para esta prenda úsalos, si no intenta una sola vez con otra descripción"), nil
 		}
-		shopping.AnnotateNearby(products, st.Stores)
-		st.AddProducts(products)
+		ts.mu.Lock()
+		shopping.AnnotateNearby(products, ts.st.Stores)
+		ts.st.AddProducts(products)
+		ts.mu.Unlock()
+		slog.InfoContext(ctx, "agent: products found", "session_id", ts.st.ID, "query", query, "max_price", a.MaxPriceMXN, "count", len(products))
+		if len(products) == 0 {
+			return toJSON(map[string]any{"count": 0, "products": []any{}, "hint": "sin resultados: simplifica la búsqueda (quita store, color o corte) y reintenta una vez; si sigue vacía, incluye el artículo sin product_ids"}), nil
+		}
 		return toJSON(map[string]any{"count": len(products), "products": compactProducts(products)}), nil
 
 	case toolAskUser:
@@ -379,7 +477,9 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 				opts[i].ID = fmt.Sprintf("opt_%d", i+1)
 			}
 		}
-		r.recordAsk(st, strings.TrimSpace(a.Message), mode, opts, now)
+		ts.mu.Lock()
+		r.recordAsk(ts.st, strings.TrimSpace(a.Message), mode, opts, ts.now)
+		ts.mu.Unlock()
 		return `{"ok":true}`, &TurnOutput{Message: strings.TrimSpace(a.Message), InputMode: mode, Options: opts}
 
 	case toolFinish:
@@ -387,7 +487,9 @@ func (r *Runner) execTool(ctx context.Context, st *session.State, call llm.ToolC
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
-		return r.finish(st, a, finishAttempts, now)
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
+		return r.finish(ts.st, a, &ts.finishAttempts, ts.now)
 
 	default:
 		return errJSON("herramienta desconocida: " + call.Name), nil
@@ -403,35 +505,53 @@ func (r *Runner) finish(st *session.State, a finishArgs, attempts *int, now time
 		return errJSON("shopping_list vacía: busca productos con search_products y vuelve a intentar"), nil
 	}
 
+	// Drop empty ids (the model uses them when a search found nothing) and
+	// reject ids that never came out of search_products.
 	var unknown []string
-	check := func(ids []string) {
+	clean := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
 		for _, id := range ids {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
 			if _, ok := st.Products[id]; !ok {
 				unknown = append(unknown, id)
+				continue
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	for i := range a.ShoppingList {
+		a.ShoppingList[i].ProductIDs = clean(a.ShoppingList[i].ProductIDs)
+	}
+	for i := range a.PriorityActions {
+		a.PriorityActions[i].ProductIDs = clean(a.PriorityActions[i].ProductIDs)
+	}
+	for li := range a.Looks {
+		kept := a.Looks[li].Pieces[:0]
+		for _, p := range a.Looks[li].Pieces {
+			if ids := clean([]string{p.ProductID}); len(ids) == 1 {
+				kept = append(kept, p)
 			}
 		}
-	}
-	for _, item := range a.ShoppingList {
-		check(item.ProductIDs)
-	}
-	for _, act := range a.PriorityActions {
-		check(act.ProductIDs)
-	}
-	for _, l := range a.Looks {
-		for _, p := range l.Pieces {
-			check([]string{p.ProductID})
-		}
+		a.Looks[li].Pieces = kept
 	}
 	if len(unknown) > 0 {
-		return errJSON("product_ids desconocidos: " + strings.Join(unknown, ", ") + ". Usa solo ids devueltos por search_products."), nil
+		return errJSON("product_ids desconocidos: " + strings.Join(unknown, ", ") + ". Usa solo ids tal como los devolvió search_products. Si el usuario ya tiene la prenda, no la pongas en shopping_list; si no encontraste producto, deja product_ids vacío y di en qué tienda cercana buscarlo."), nil
 	}
 
 	total := 0.0
+	withProducts := 0
 	for _, item := range a.ShoppingList {
-		if len(item.ProductIDs) == 0 {
-			return errJSON("cada artículo de shopping_list necesita al menos un product_id"), nil
+		if len(item.ProductIDs) > 0 {
+			withProducts++
+			total += st.Products[item.ProductIDs[0]].Price
 		}
-		total += st.Products[item.ProductIDs[0]].Price
+	}
+	if withProducts == 0 && len(st.Products) > 0 {
+		return errJSON("ningún artículo tiene product_ids aunque search_products devolvió productos; asigna los ids que sirvan antes de terminar"), nil
 	}
 	if b := st.Profile.BudgetMXN; b > 0 && total > b*1.1 && *attempts == 0 {
 		*attempts++
@@ -546,4 +666,11 @@ func mergeStores(a, b []shopping.Store) []shopping.Store {
 		}
 	}
 	return out
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

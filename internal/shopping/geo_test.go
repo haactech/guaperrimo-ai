@@ -40,3 +40,15 @@ func TestMatchNearbyStore(t *testing.T) {
 		}
 	}
 }
+
+func TestFakeDirectedSearchReturnsOnlyThatMerchant(t *testing.T) {
+	f := Fake{}
+	ps, _ := f.SearchProducts(t.Context(), ProductQuery{Query: "Zara camisa lino azul hombre"})
+	if len(ps) != 1 || ps[0].Store != "Zara MX" {
+		t.Fatalf("directed search should return only Zara, got %+v", ps)
+	}
+	all, _ := f.SearchProducts(t.Context(), ProductQuery{Query: "camisa lino azul hombre"})
+	if len(all) < 4 {
+		t.Fatalf("undirected search should return every merchant, got %d", len(all))
+	}
+}

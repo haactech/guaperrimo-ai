@@ -63,6 +63,7 @@ type ChatResponse struct {
 	Stores          []shopping.Store         `json:"stores,omitempty"`
 	TotalMXN        float64                  `json:"total_mxn,omitempty"`
 	LooksGenerating bool                     `json:"looks_generating,omitempty"`
+	MatrixAvailable bool                     `json:"matrix_available,omitempty"` // GET /session/{id}/matrix has rows
 }
 
 // --- Try-on ---

@@ -79,3 +79,47 @@ Qdrant, embeddings, catálogo Postgres, pipeline de Kaggle, orquestador muerto,
 diagnóstico con scores, reglas de avance forzado, endpoint `/analyze`, Redis,
 `internal/voice`, binarios commiteados y migraciones Flyway. El snapshot previo
 está en la rama `pre-agents-snapshot`.
+
+## Aprendizajes de las pruebas con SerpAPI real (2026-10-08)
+
+- `max_price` en Google Shopping vía SerpAPI devuelve un resultado vacío
+  ("Fully empty"). Nunca se manda; el precio se filtra del lado del servidor.
+- Cada consulta tarda entre 1 y 25 s. Por eso las herramientas de una misma
+  respuesta del modelo corren en paralelo, hay un tope de búsquedas por turno
+  (`AGENT_MAX_SEARCHES`), un guardia que rechaza búsquedas cuando quedan menos
+  de 25 s de turno, y una caché de 15 minutos para que un reintento sea instantáneo.
+- Las listas de eBay, AliExpress y similares se descartan, igual que precios
+  menores a 60 MXN, que suelen ser monedas mal interpretadas.
+- Los comercios de Google Shopping rara vez coinciden con boutiques locales;
+  `nearby_store` aparece sobre todo con cadenas (H&M, Zara, Liverpool). Cuando
+  no hay producto, el agente puede incluir el artículo sin `product_ids` y decir
+  en qué tienda cercana buscarlo.
+- Un turno final típico toma entre 30 y 60 s con el modelo real. iOS espera
+  hasta 180 s por turno de chat.
+
+## Probador mix & match (2026-10-08)
+
+El objetivo es que el usuario deslice una fila (arriba, encima, abajo,
+calzado) y vea la combinación sobre su propia foto, y que pueda guardar la que
+le gustó con la explicación y las tiendas.
+
+- **Cuadrícula.** `session.BuildMatrix` la deriva de la recomendación: por slot,
+  los productos con imagen de la lista de compras y de los looks, el principal
+  primero, máximo `MATRIX_MAX_PER_SLOT`. Los accesorios no entran porque el
+  try-on no los renderiza.
+- **Render por prefijos.** `tryon.Renderer` encadena las prendas en orden de
+  capas y guarda cada prefijo como un render propio en `State.Renders`. Cambiar
+  los zapatos cuesta una llamada; cambiar la camisa cuesta tantas como filas.
+  Las peticiones duplicadas en vuelo se colapsan, la concurrencia está acotada
+  y el prefetch de vecinos nunca ocupa el último slot libre, así la petición del
+  usuario no espera detrás del trabajo especulativo.
+- **Prewarm.** Al terminar la recomendación se encola la combinación por
+  defecto y las que están a un swipe; con 3×3×2 son unas 11 imágenes.
+- **Foto de la prenda.** Antes de renderizar se piden los detalles del producto
+  (`google_product` en SerpAPI): fotos de hasta 600 px, link del comercio y
+  disponibilidad. Se descargan hasta tres candidatas y gana la de más píxeles.
+  Cuesta una búsqueda por producto; se apaga con `RESOLVE_PRODUCT_DETAILS=false`.
+- **Looks.** `LookGenerator` ahora pasa por el mismo `Renderer`, así los looks
+  del agente y la cuadrícula comparten imágenes.
+- **Guardado.** `POST /saved-looks` congela la selección con producto, porqué,
+  total y tiendas cercanas. Vive en la sesión; con Postgres sobrevive días.

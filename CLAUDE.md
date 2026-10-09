@@ -30,7 +30,10 @@ iOS ──POST /session/{id}/chat───▶ chat handler
                                     ▼
                                 session.Store (memory or Postgres JSONB)
                                     ▼ (optional, background)
-                                tryon.LookGenerator ── Google Vertex virtual try-on on product thumbnails
+                                tryon.Renderer ── Vertex try-on, one cached render per garment-chain prefix
+                                    ├─ prewarm: default combination + one-swipe neighbours
+                                    ├─ GET /matrix · POST /matrix/render (mix & match rows)
+                                    └─ POST /saved-looks (chosen outfit + why + stores)
 ```
 
 - `internal/llm` — provider-agnostic chat completions with tool calling.
@@ -46,7 +49,8 @@ iOS ──POST /session/{id}/chat───▶ chat handler
 - `internal/session` — JSON state (profile, agent memory, products seen,
   recommendation, looks) with `MemoryStore` and `PostgresStore`.
   `Update` does read-modify-write under a lock so background jobs never clobber a turn.
-- `internal/tryon` — Vertex VTON provider, safe image download, look generator.
+- `internal/tryon` — Vertex VTON provider, safe image download, `Renderer` (prefix cache,
+  in-flight dedupe, bounded prefetch) and the look generator built on it.
 - `internal/api` — handlers, DTOs, optional `X-API-Key` middleware.
 
 ## Commands
@@ -57,6 +61,8 @@ go test ./...           # unit tests (no network: fakes + httptest)
 go run ./cmd/server     # run (reads .env)
 docker compose up       # app + postgres
 go run ./cmd/tryontest -person p.jpg -garment g.jpg   # VTON smoke test
+python3 scripts/chat.py --photo foto.jpg              # interactive terminal client (no iPhone needed)
+LLM_LIVE=1 go test ./internal/llm -run Live -v        # one real tool-calling round trip
 ```
 
 ## Configuration

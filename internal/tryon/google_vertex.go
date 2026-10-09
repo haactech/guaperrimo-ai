@@ -147,3 +147,11 @@ func getAccessToken(ctx context.Context) (string, error) {
 	}
 	return token.AccessToken, nil
 }
+
+// CheckCredentials verifies that Google Application Default Credentials are
+// available, so the server can disable try-on at startup instead of failing
+// on every look.
+func CheckCredentials(ctx context.Context) error {
+	_, err := getAccessToken(ctx)
+	return err
+}

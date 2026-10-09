@@ -24,12 +24,14 @@ var errNoPhoto = errors.New("no photo uploaded for this session")
 
 // ChatDeps bundles what the chat handler needs.
 type ChatDeps struct {
-	Store       session.Store
-	Images      storage.ImageStore
-	Analyzer    vision.Analyzer
-	Runner      *agent.Runner
-	Looks       *tryon.LookGenerator // nil = try-on disabled
-	TurnTimeout time.Duration
+	Store            session.Store
+	Images           storage.ImageStore
+	Analyzer         vision.Analyzer
+	Runner           *agent.Runner
+	Looks            *tryon.LookGenerator // nil = try-on disabled
+	Renderer         *tryon.Renderer      // nil = try-on disabled
+	MatrixMaxPerSlot int
+	TurnTimeout      time.Duration
 }
 
 func chatHandler(deps *ChatDeps) http.HandlerFunc {
@@ -112,6 +114,9 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			return
 		}
 
+		if out.IsFinal {
+			st.Matrix = session.BuildMatrix(st, deps.MatrixMaxPerSlot)
+		}
 		looksGenerating := false
 		if out.IsFinal && deps.Looks != nil && len(st.Looks) > 0 && st.ImageKey != "" {
 			st.LookResults = make([]session.LookResult, 0, len(st.Looks))
@@ -130,6 +135,14 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 		if looksGenerating {
 			go deps.Looks.GenerateAll(context.WithoutCancel(ctx), sessionID)
 		}
+		// Prewarm the grid: the default combination first, then everything one swipe away.
+		if out.IsFinal && deps.Renderer != nil && st.Matrix != nil && st.ImageKey != "" {
+			def := session.Selection(st.Matrix.Default)
+			deps.Renderer.Request(sessionID, st.Matrix.Combo(def), false)
+			for _, n := range st.Matrix.Neighbors(def) {
+				deps.Renderer.Request(sessionID, st.Matrix.Combo(n), true)
+			}
+		}
 
 		slog.InfoContext(ctx, "chat: turn done",
 			"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,
@@ -137,6 +150,7 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 
 		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.IsFinal)
 		resp.LooksGenerating = looksGenerating
+		resp.MatrixAvailable = st.Matrix != nil
 		writeJSON(w, http.StatusOK, resp)
 	}
 }
@@ -262,6 +276,7 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 		if newLooks {
 			cur.Looks = st.Looks
 			cur.LookResults = st.LookResults
+			cur.Matrix = st.Matrix
 		}
 		return nil
 	})

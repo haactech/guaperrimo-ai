@@ -113,7 +113,7 @@ func newTestServer(t *testing.T, model llm.Provider, apiKey string) (*httptest.S
 	store := session.NewMemoryStore(time.Hour)
 	t.Cleanup(store.Stop)
 	images := &memImages{}
-	runner := agent.NewRunner(model, agent.Deps{Shopping: shopping.Fake{}}, 8, 4)
+	runner := agent.NewRunner(model, agent.Deps{Shopping: shopping.Fake{}, MinSearchTime: time.Second}, 8, 4)
 	router := NewRouter(Deps{
 		APIKey: apiKey,
 		Images: images,
@@ -211,7 +211,7 @@ func TestFullFlow(t *testing.T) {
 		// turn 3: follow-up after the recommendation
 		calls(call("a2", "ask_user", map[string]any{"message": "¿Quieres que busque zapatos también?", "input_mode": "voice"})),
 	}}
-	srv, _ := newTestServer(t, model, "")
+	srv, store := newTestServer(t, model, "")
 	base := srv.URL + "/session/sess_flow_01"
 
 	if code, body := postJSON(t, base+"/chat", map[string]any{"type": "voice_response", "transcript": "hola"}, nil); code != 404 {
@@ -237,6 +237,13 @@ func TestFullFlow(t *testing.T) {
 		"location": map[string]any{"lat": 19.4194, "lng": -99.1616, "label": "Roma Norte"},
 	}, nil)
 	if code != 200 || body["is_final"] != true || body["location_known"] != true {
+		if st, err := store.Get(context.Background(), "sess_flow_01"); err == nil {
+			for _, m := range st.Messages {
+				if m.Role == llm.RoleTool && strings.Contains(m.Content, "error") {
+					t.Logf("tool %s (%s) -> %s", m.Name, m.ToolCallID, m.Content)
+				}
+			}
+		}
 		t.Fatalf("final turn: %d %v", code, body)
 	}
 	list := body["shopping_list"].([]any)

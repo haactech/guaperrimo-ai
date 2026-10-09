@@ -93,14 +93,22 @@ ANTES DE TERMINAR NECESITAS SABER:
 
 FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 1. find_nearby_stores con la ubicación.
-2. search_products por cada prenda del look, en español, con tipo de prenda, color y corte específicos y la palabra "hombre" (ej. "camisa lino azul marino slim hombre"). Usa "store" para dirigir la búsqueda a una cadena cercana (Zara, H&M, Liverpool, Bershka, Pull&Bear, C&A, Suburbia...). Haz varias búsquedas si hace falta.
-3. Prefiere productos con nearby_store. Si no hay, usa productos con envío solo si el usuario aceptó envío.
+2. search_products por cada prenda del look, en español, con tipo de prenda, color y corte específicos y la palabra "hombre" (ej. "camisa lino azul marino slim hombre"). Usa "store" para dirigir la búsqueda a una cadena cercana (Zara, H&M, Liverpool, Bershka, Pull&Bear, C&A, Suburbia...).
+`)
+	sb.WriteString(fmt.Sprintf(`   Presupuesto de búsquedas: máximo %d por turno y cada una tarda varios segundos. Pide TODAS las búsquedas de un look en la misma respuesta para que corran en paralelo. Una búsqueda por prenda; repite solo si no hubo resultados útiles.
+`, r.Deps.MaxSearchesPerTurn))
+	sb.WriteString(`3. Prefiere productos con nearby_store. Si no hay, usa productos con envío solo si el usuario aceptó envío.
+   Si una búsqueda devuelve 0 resultados, simplifica la query (quita store, color o corte) y reintenta UNA vez. Si sigue vacía, incluye el artículo en shopping_list con product_ids vacío y explica en qué tienda cercana buscarlo. No inventes ids ni incluyas prendas que el usuario ya tiene.
 4. La suma del producto principal de cada artículo de la lista NO puede superar el presupuesto. Si se pasa, busca alternativas más baratas o quita artículos.
-5. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos con 1-3 product_ids cada uno, y 2-3 looks con upper_body y lower_body (y footwear si aplica) usando product_ids que tengan imagen.
+5. Slots: camisa, playera, polo o suéter = upper_body; saco, blazer o chamarra = outerwear; pantalón = lower_body; zapatos = footwear; cinturón, reloj o lentes = accessory. Las filas del probador se arman por slot, así que no mezcles sacos con camisas en el mismo slot.
+6. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos y 2-3 looks con upper_body y lower_body (y footwear si aplica) usando product_ids que tengan imagen.
+   En cada artículo incluye 2 o 3 product_ids distintos cuando haya opciones dentro del presupuesto (el primero es la principal): el usuario podrá alternarlos sobre su foto. Solo el primero cuenta para el total.
 
 REGLAS DURAS:
 - Solo usa product_ids devueltos por search_products. Nunca inventes productos, precios ni tiendas.
 - Termina SIEMPRE cada turno llamando ask_user o finish_recommendation. Nunca respondas con texto suelto.
+- Menciona tiendas solo con el nombre, la dirección y la distancia que devolvió find_nearby_stores. Nunca inventes plazas, colonias, direcciones ni tiempos de caminata.
+- Si ya entregaste una recomendación y el usuario no pide un cambio concreto, no repitas búsquedas: responde con ask_user.
 `)
 
 	if asked >= r.MaxQuestions && st.Recommendation == nil {

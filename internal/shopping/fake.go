@@ -33,8 +33,12 @@ func (Fake) SearchProducts(_ context.Context, q ProductQuery) ([]Product, error)
 	if base == "" {
 		base = "prenda"
 	}
+	lower := strings.ToLower(base)
 	var out []Product
 	for i, m := range fakeMerchants {
+		if first := strings.ToLower(strings.Fields(m.name)[0]); onlyMerchant(lower) && !strings.HasPrefix(lower, first) {
+			continue
+		}
 		price := m.price
 		if q.MaxPrice > 0 && price > q.MaxPrice {
 			price = q.MaxPrice * (0.6 + 0.08*float64(i))
@@ -105,4 +109,19 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// onlyMerchant reports whether the query is directed at one of the fake merchants.
+func onlyMerchant(lowerQuery string) bool {
+	for _, m := range fakeMerchants {
+		if strings.HasPrefix(lowerQuery, strings.ToLower(strings.Fields(m.name)[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+// ProductDetails returns no extra data; the renderer falls back to the thumbnail.
+func (Fake) ProductDetails(_ context.Context, _ string) (*ProductDetails, error) {
+	return &ProductDetails{}, nil
 }

@@ -11,7 +11,7 @@ import (
 const shoppingFixture = `{"shopping_results":[
  {"position":1,"title":"Camisa de lino azul marino","product_id":"1","product_link":"https://www.google.com/shopping/product/1","source":"Zara MX","price":"$899.00","extracted_price":899.0,"thumbnail":"https://img/1.jpg","delivery":"Envío gratis","extensions":["Nearby, 2 km"]},
  {"position":2,"title":"Camisa cara","product_link":"https://www.google.com/shopping/product/2","link":"https://tienda.mx/2","source":"Liverpool","price":"$2,499.00","extracted_price":2499.0,"thumbnail":"https://img/2.jpg"},
- {"position":3,"title":"Camisa importada","product_link":"https://www.google.com/shopping/product/3","source":"Amazon.com","price":"US$40.00","extracted_price":40.0}
+ {"position":3,"title":"Camisa importada","product_link":"https://www.google.com/shopping/product/3","source":"Amazon.com","price":"US$40.00","extracted_price":740.0}
 ]}`
 
 const mapsFixture = `{"local_results":[
@@ -53,8 +53,11 @@ func TestSearchProductsMapsAndFilters(t *testing.T) {
 		t.Fatalf("search: %v", err)
 	}
 	q := got[0]
-	if q.Get("engine") != "google_shopping" || q.Get("gl") != "mx" || q.Get("hl") != "es" || q.Get("max_price") != "1000" || q.Get("location") != "Mexico" || q.Get("api_key") != "key" {
+	if q.Get("engine") != "google_shopping" || q.Get("gl") != "mx" || q.Get("hl") != "es" || q.Get("location") != "Mexico" || q.Get("api_key") != "key" {
 		t.Fatalf("unexpected params: %v", q)
+	}
+	if q.Has("max_price") {
+		t.Fatalf("max_price must not be sent to SerpAPI (it empties the results); filter client-side")
 	}
 	if len(products) != 2 {
 		t.Fatalf("expected the 2499 item filtered out, got %d products", len(products))
@@ -130,5 +133,34 @@ func TestFakeIsDeterministic(t *testing.T) {
 	AnnotateNearby(a, stores)
 	if a[0].NearbyStore == nil {
 		t.Errorf("Zara MX should match the fake Zara store")
+	}
+}
+
+func TestExcludedMerchantsAndJunkPrices(t *testing.T) {
+	if !excludedMerchant("eBay - tienda_mx") || excludedMerchant("Liverpool") {
+		t.Fatal("merchant exclusion list misbehaves")
+	}
+	p := mapShoppingItem(serpShoppingItem{Title: "x", Source: "eBay", ExtractedPrice: 45})
+	if p.Price != 45 || p.Store != "eBay" {
+		t.Fatal("mapping should be untouched; filtering happens in SearchProducts")
+	}
+}
+
+func TestProductDetailsParsesThumbnailsAndStore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("engine") != "google_product" || r.URL.Query().Get("product_id") != "123" {
+			w.WriteHeader(400)
+			return
+		}
+		_, _ = w.Write([]byte(`{"product_results":{"title":"Camisa","thumbnails":["https://img/a.jpg","https://img/b.jpg"],"stores":[{"name":"Massimo Dutti","link":"https://www.massimodutti.com/mx/x","details_and_offers":["En stock para compras en línea","Entrega gratuita"]}]}}`))
+	}))
+	defer srv.Close()
+	s := NewSerpAPI("key", "Mexico").WithBaseURL(srv.URL)
+	d, err := s.ProductDetails(context.Background(), "123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Images) != 2 || d.MerchantLink != "https://www.massimodutti.com/mx/x" || d.Store != "Massimo Dutti" || d.Availability != "En stock para compras en línea · Entrega gratuita" {
+		t.Fatalf("details: %+v", d)
 	}
 }

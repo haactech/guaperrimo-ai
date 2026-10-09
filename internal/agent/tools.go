@@ -108,10 +108,10 @@ func toolDefinitions() []llm.Tool {
 					"product_ids": strArr("ids de search_products que resuelven esta acción"),
 				}, []string{"id", "title", "description", "impact", "effort"}), "2-4 acciones ordenadas por impacto"),
 				"shopping_list": objArr(obj(map[string]any{
-					"slot":        enum("tipo de prenda", "upper_body", "lower_body", "footwear", "outerwear", "accessory"),
+					"slot":        enum("upper_body: camisa/playera/polo/suéter · outerwear: saco/blazer/chamarra · lower_body · footwear · accessory", "upper_body", "lower_body", "footwear", "outerwear", "accessory"),
 					"description": str("Qué comprar, en lenguaje simple"),
 					"why":         str("Por qué le favorece, una frase"),
-					"product_ids": strArr("1-3 ids de search_products; el primero es la opción principal"),
+					"product_ids": strArr("2-3 ids de search_products cuando haya opciones; el primero es la principal y el único que cuenta para el total"),
 					"priority":    integer("1 = comprar primero"),
 				}, []string{"slot", "description", "product_ids"}), "2-5 artículos"),
 				"looks": objArr(obj(map[string]any{

@@ -6,18 +6,21 @@ import "context"
 
 // Product is a purchasable article found online.
 type Product struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Store       string    `json:"store"` // merchant name as reported by the search engine
-	Price       float64   `json:"price"`
-	Currency    string    `json:"currency"`
-	Link        string    `json:"link"`
-	Thumbnail   string    `json:"thumbnail,omitempty"`
-	Delivery    string    `json:"delivery,omitempty"`
-	Rating      float64   `json:"rating,omitempty"`
-	Reviews     int       `json:"reviews,omitempty"`
-	Tags        []string  `json:"tags,omitempty"`
-	NearbyStore *StoreRef `json:"nearby_store,omitempty"` // set when the merchant has a physical store near the user
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Store        string    `json:"store"` // merchant name as reported by the search engine
+	Price        float64   `json:"price"`
+	Currency     string    `json:"currency"`
+	Link         string    `json:"link"`
+	Thumbnail    string    `json:"thumbnail,omitempty"`
+	LargeImage   string    `json:"large_image,omitempty"`  // high-resolution product photo, resolved lazily
+	SourceID     string    `json:"source_id,omitempty"`    // search engine product id, for detail lookups
+	Availability string    `json:"availability,omitempty"` // e.g. "En stock para compras en línea"
+	Delivery     string    `json:"delivery,omitempty"`
+	Rating       float64   `json:"rating,omitempty"`
+	Reviews      int       `json:"reviews,omitempty"`
+	Tags         []string  `json:"tags,omitempty"`
+	NearbyStore  *StoreRef `json:"nearby_store,omitempty"` // set when the merchant has a physical store near the user
 }
 
 // StoreRef points at a physical store found earlier in the session.
@@ -75,4 +78,17 @@ type Provider interface {
 	FindStores(ctx context.Context, q StoreQuery) ([]Store, error)
 	Geocode(ctx context.Context, query string) (*Geo, error)
 	Name() string
+}
+
+// ProductDetails is what a detail lookup adds on top of a search result.
+type ProductDetails struct {
+	Images       []string `json:"images"`                  // larger photos, best first
+	MerchantLink string   `json:"merchant_link,omitempty"` // the store's own product page
+	Availability string   `json:"availability,omitempty"`
+	Store        string   `json:"store,omitempty"`
+}
+
+// DetailResolver fetches product details by the engine's product id.
+type DetailResolver interface {
+	ProductDetails(ctx context.Context, sourceID string) (*ProductDetails, error)
 }

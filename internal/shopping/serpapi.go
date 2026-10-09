@@ -5,12 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -36,7 +37,7 @@ func NewSerpAPI(apiKey, defaultLocation string) *SerpAPI {
 		gl:              "mx",
 		hl:              "es",
 		defaultLocation: defaultLocation,
-		http:            &http.Client{Timeout: 25 * time.Second},
+		http:            &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
@@ -102,7 +103,7 @@ func (s *SerpAPI) get(ctx context.Context, params url.Values, out any) error {
 	}
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("serpapi: request failed: %w", err)
+		return fmt.Errorf("serpapi: request failed: %w", stripURL(err))
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -134,9 +135,8 @@ func (s *SerpAPI) SearchProducts(ctx context.Context, q ProductQuery) ([]Product
 		loc = s.defaultLocation
 	}
 	params.Set("location", loc)
-	if q.MaxPrice > 0 {
-		params.Set("max_price", strconv.Itoa(int(q.MaxPrice)))
-	}
+	// Do not send max_price: Google Shopping via SerpAPI returns an empty
+	// result set when it is present. Prices are filtered client-side below.
 
 	var resp serpShoppingResponse
 	if err := s.get(ctx, params, &resp); err != nil {
@@ -152,7 +152,7 @@ func (s *SerpAPI) SearchProducts(ctx context.Context, q ProductQuery) ([]Product
 
 	products := make([]Product, 0, len(resp.ShoppingResults))
 	for _, item := range resp.ShoppingResults {
-		if item.Title == "" {
+		if item.Title == "" || item.ExtractedPrice < minPlausiblePriceMXN || excludedMerchant(item.Source) {
 			continue
 		}
 		if q.MaxPrice > 0 && item.ExtractedPrice > q.MaxPrice {
@@ -163,6 +163,7 @@ func (s *SerpAPI) SearchProducts(ctx context.Context, q ProductQuery) ([]Product
 			break
 		}
 	}
+	slog.InfoContext(ctx, "serpapi: shopping", "query", q.Query, "max_price", q.MaxPrice, "raw", len(resp.ShoppingResults), "kept", len(products))
 	return products, nil
 }
 
@@ -181,6 +182,7 @@ func mapShoppingItem(item serpShoppingItem) Product {
 	}
 	return Product{
 		ID:        "p_" + shortHash(idSource),
+		SourceID:  item.ProductID,
 		Title:     item.Title,
 		Store:     item.Source,
 		Price:     item.ExtractedPrice,
@@ -310,4 +312,73 @@ func truncate(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "..."
+}
+
+// stripURL drops the request URL from transport errors so the api_key query
+// parameter never reaches logs.
+func stripURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}
+
+// minPlausiblePriceMXN filters out mis-parsed or junk listings.
+const minPlausiblePriceMXN = 60
+
+// excludedMerchants are cross-border or second-hand marketplaces whose
+// listings are not something the user can buy nearby or trust on fit.
+var excludedMerchants = []string{"ebay", "aliexpress", "wish", "alibaba", "dhgate"}
+
+func excludedMerchant(source string) bool {
+	src := strings.ToLower(source)
+	for _, m := range excludedMerchants {
+		if strings.Contains(src, m) {
+			return true
+		}
+	}
+	return false
+}
+
+type serpProductResponse struct {
+	ProductResults struct {
+		Title      string   `json:"title"`
+		Thumbnails []string `json:"thumbnails"`
+		Stores     []struct {
+			Name             string   `json:"name"`
+			Link             string   `json:"link"`
+			DetailsAndOffers []string `json:"details_and_offers"`
+		} `json:"stores"`
+	} `json:"product_results"`
+	Error string `json:"error"`
+}
+
+// ProductDetails calls the Google Product API for larger photos and the
+// merchant's own link. Costs one SerpAPI search per product.
+func (s *SerpAPI) ProductDetails(ctx context.Context, sourceID string) (*ProductDetails, error) {
+	if strings.TrimSpace(sourceID) == "" {
+		return nil, fmt.Errorf("serpapi: empty product id")
+	}
+	params := url.Values{}
+	params.Set("engine", "google_product")
+	params.Set("product_id", sourceID)
+	params.Set("gl", s.gl)
+	params.Set("hl", s.hl)
+	var resp serpProductResponse
+	if err := s.get(ctx, params, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Error != "" && len(resp.ProductResults.Thumbnails) == 0 {
+		return nil, fmt.Errorf("serpapi: %s", resp.Error)
+	}
+	d := &ProductDetails{Images: resp.ProductResults.Thumbnails}
+	if len(resp.ProductResults.Stores) > 0 {
+		st := resp.ProductResults.Stores[0]
+		d.MerchantLink = st.Link
+		d.Store = st.Name
+		d.Availability = strings.Join(st.DetailsAndOffers, " · ")
+	}
+	slog.InfoContext(ctx, "serpapi: product details", "product_id", sourceID, "images", len(d.Images), "merchant_link", d.MerchantLink != "")
+	return d, nil
 }

@@ -40,11 +40,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	images, err := storage.NewR2Store(ctx, cfg)
+	r2, err := storage.NewR2Store(ctx, cfg)
 	if err != nil {
 		slog.ErrorContext(ctx, "r2 init failed", "error", err)
 		os.Exit(1)
 	}
+	// Images are served through this API with signed links: the bucket stays
+	// private and the app loads them with a plain GET.
+	publicBase := cfg.PublicBaseURL
+	if publicBase == "" {
+		publicBase = config.DefaultPublicBaseURL(cfg.Port)
+	}
+	signingSecret := cfg.APIKey
+	if signingSecret == "" {
+		signingSecret = cfg.R2AccessKeySecret
+	}
+	images := storage.WithSignedURLs(r2, publicBase, signingSecret, cfg.ImageURLTTL)
+	slog.InfoContext(ctx, "images served via API", "public_base_url", publicBase, "link_ttl", cfg.ImageURLTTL)
 
 	// LLM: chat+tools and vision may be different models of the same provider.
 	flavor := llm.Flavor(cfg.LLMProvider)
@@ -58,7 +70,7 @@ func main() {
 	// Shopping provider: SerpAPI when a key exists, otherwise deterministic fake data.
 	var shop shopping.Provider
 	if cfg.SerpAPIKey != "" && cfg.ShoppingProvider != "fake" {
-		shop = shopping.NewSerpAPI(cfg.SerpAPIKey, cfg.SearchLocation)
+		shop = shopping.NewCache(shopping.NewSerpAPI(cfg.SerpAPIKey, cfg.SearchLocation), 15*time.Minute)
 	} else {
 		shop = shopping.Fake{}
 		slog.WarnContext(ctx, "SERPAPI_KEY not set: using FAKE products and stores")
@@ -84,43 +96,54 @@ func main() {
 	}
 
 	runner := agent.NewRunner(chatLLM, agent.Deps{
-		Shopping:        shop,
-		DefaultRadiusM:  cfg.DefaultRadiusM,
-		DefaultLocation: cfg.SearchLocation,
+		Shopping:           shop,
+		DefaultRadiusM:     cfg.DefaultRadiusM,
+		DefaultLocation:    cfg.SearchLocation,
+		MaxSearchesPerTurn: cfg.AgentMaxSearches,
 	}, cfg.AgentMaxSteps, cfg.AgentMaxQuestions)
 
 	chatDeps := &api.ChatDeps{
-		Store:       store,
-		Images:      images,
-		Analyzer:    vision.NewLLMAnalyzer(visionLLM),
-		Runner:      runner,
-		TurnTimeout: cfg.AgentTurnTimeout,
+		Store:            store,
+		Images:           images,
+		Analyzer:         vision.NewLLMAnalyzer(visionLLM),
+		Runner:           runner,
+		MatrixMaxPerSlot: cfg.MatrixMaxPerSlot,
+		TurnTimeout:      cfg.AgentTurnTimeout,
 	}
+	matrixDeps := &api.MatrixDeps{Store: store}
 
-	// Virtual try-on is optional.
+	// Virtual try-on is optional: it needs a GCP project and working Google credentials.
 	var tryonDeps *api.TryOnDeps
-	if cfg.GCPProjectID != "" {
+	if cfg.GCPProjectID == "" {
+		slog.WarnContext(ctx, "vton disabled (GCP_PROJECT_ID not set)")
+	} else {
 		if err := cfg.SetupGCPCredentials(); err != nil {
 			slog.ErrorContext(ctx, "gcp credentials", "error", err)
 		}
-		vton := &tryon.GoogleVertexVTON{
-			ProjectID:  cfg.GCPProjectID,
-			Region:     cfg.GCPRegion,
-			BaseSteps:  cfg.VTONBaseSteps,
-			HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
+		if err := tryon.CheckCredentials(ctx); err != nil {
+			slog.WarnContext(ctx, "vton disabled: Google credentials not available; run `gcloud auth application-default login` or set GCP_SA_KEY_JSON", "error", err)
+		} else {
+			vton := &tryon.GoogleVertexVTON{
+				ProjectID:  cfg.GCPProjectID,
+				Region:     cfg.GCPRegion,
+				BaseSteps:  cfg.VTONBaseSteps,
+				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
+			}
+			httpClient := &http.Client{Timeout: 15 * time.Second}
+			var details shopping.DetailResolver
+			if dr, ok := shop.(shopping.DetailResolver); ok && cfg.ResolveProductDetails {
+				details = dr
+			}
+			renderer := tryon.NewRenderer(store, images, vton, details, httpClient, cfg.RenderConcurrency, cfg.PrefetchConcurrency, cfg.VTONTimeout)
+			tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
+			chatDeps.Renderer = renderer
+			chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
+			matrixDeps.Renderer = renderer
+			slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "render_concurrency", cfg.RenderConcurrency, "product_details", details != nil)
 		}
-		httpClient := &http.Client{Timeout: 15 * time.Second}
-		tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
-		chatDeps.Looks = &tryon.LookGenerator{
-			Store: store, Images: images, VTON: vton,
-			Timeout: cfg.LookGenerationTimeout, HTTPClient: httpClient, Concurrency: cfg.LookConcurrency,
-		}
-		slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "look_timeout", cfg.LookGenerationTimeout)
-	} else {
-		slog.WarnContext(ctx, "vton disabled (GCP_PROJECT_ID not set)")
 	}
 
-	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps})
+	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, Matrix: matrixDeps, Signed: images})
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
