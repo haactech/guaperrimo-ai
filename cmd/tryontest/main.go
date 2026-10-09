@@ -1,5 +1,5 @@
 // tryontest is a standalone CLI tool to test the Virtual Try-On provider
-// without needing the full server, RAG, or session flow.
+// without needing the full server or session flow.
 //
 // Usage:
 //
@@ -7,7 +7,7 @@
 //
 // Prerequisites:
 //
-//	export GCP_PROJECT_ID=gen-lang-client-0210965642
+//	export GCP_PROJECT_ID=<your-gcp-project>
 //	gcloud auth application-default login
 package main
 

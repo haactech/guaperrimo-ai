@@ -23,20 +23,19 @@ var allowedContentTypes = map[string]string{
 func imageUploadHandler(store storage.ImageStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sessionID := r.PathValue("id")
-		if sessionID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing session id"})
+		if !sessionIDPattern.MatchString(sessionID) {
+			writeError(w, http.StatusBadRequest, "invalid session id")
 			return
 		}
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxImageSize)
-
 		file, header, err := r.FormFile("image")
 		if err != nil {
-			if err.Error() == "http: request body too large" {
-				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "image exceeds 10MB limit"})
+			if strings.Contains(err.Error(), "request body too large") {
+				writeError(w, http.StatusRequestEntityTooLarge, "image exceeds 10MB limit")
 				return
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing or invalid image field"})
+			writeError(w, http.StatusBadRequest, "missing or invalid image field")
 			return
 		}
 		defer file.Close()
@@ -47,29 +46,18 @@ func imageUploadHandler(store storage.ImageStore) http.HandlerFunc {
 		}
 		ext, ok := allowedContentTypes[contentType]
 		if !ok {
-			writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{
-				"error": "unsupported image type, allowed: JPEG, PNG, WebP",
-			})
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported image type, allowed: JPEG, PNG, WebP")
 			return
 		}
 
 		key := fmt.Sprintf("sessions/%s/welcome_%d%s", sessionID, time.Now().UnixMilli(), ext)
-
-		out, err := store.Upload(r.Context(), storage.UploadInput{
-			Key:         key,
-			Body:        file,
-			ContentType: contentType,
-		})
+		out, err := store.Upload(r.Context(), storage.UploadInput{Key: key, Body: file, ContentType: contentType})
 		if err != nil {
 			slog.ErrorContext(r.Context(), "image upload failed", "error", err, "session_id", sessionID)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+			writeError(w, http.StatusInternalServerError, "upload failed")
 			return
 		}
-
-		writeJSON(w, http.StatusOK, map[string]string{
-			"url":        out.URL,
-			"session_id": sessionID,
-		})
+		writeJSON(w, http.StatusOK, map[string]string{"url": out.URL, "session_id": sessionID})
 	}
 }
 
@@ -89,5 +77,14 @@ func detectContentType(filename string) string {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	return dec.Decode(v)
 }

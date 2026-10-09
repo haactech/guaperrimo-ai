@@ -1,86 +1,105 @@
+// Package session holds the per-user conversation state. Everything in State
+// is plain JSON so it can live in memory or in Postgres interchangeably.
 package session
 
-import "time"
+import (
+	"time"
 
-// Phase represents the current phase of the conversational flow.
+	"stylerag/internal/llm"
+	"stylerag/internal/shopping"
+	"stylerag/internal/vision"
+)
+
+// Phase is the coarse stage of a session.
 type Phase string
 
 const (
-	PhaseCapture        Phase = "capture"
-	PhaseDiscovery      Phase = "discovery"
-	PhaseDiagnosis      Phase = "diagnosis"
-	PhaseRecommendation Phase = "recommendation"
+	PhaseCapture Phase = "capture" // waiting for the photo turn
+	PhaseChat    Phase = "chat"    // agent is asking questions
+	PhaseDone    Phase = "done"    // a recommendation has been delivered
 )
 
-// FactMap is a typed map of discovery facts maintained by the LLM.
-type FactMap struct {
-	Occasion          *string  `json:"occasion,omitempty"`
-	Intention         *string  `json:"intention,omitempty"`
-	Approach          *string  `json:"approach,omitempty"`
-	PainPoints        []string `json:"pain_points,omitempty"`
-	AspirationalRef   *string  `json:"aspirational_ref,omitempty"`
-	Constraints       []string `json:"constraints,omitempty"`
-	Budget            *string  `json:"budget,omitempty"`
-	AdditionalContext *string  `json:"additional_context,omitempty"`
+// Location is where the user is, either from the device or from conversation.
+type Location struct {
+	Lat    float64 `json:"lat"`
+	Lng    float64 `json:"lng"`
+	Label  string  `json:"label,omitempty"`
+	Source string  `json:"source"` // "device" | "conversation"
 }
 
-// MaxAgenticTurns is the safety-net cap; the LLM doesn't know about it.
-const MaxAgenticTurns = 12
-
-// CountCoveredFacts returns how many fields in the FactMap are populated.
-func CountCoveredFacts(fm *FactMap) int {
-	if fm == nil {
-		return 0
-	}
-	count := 0
-	if fm.Occasion != nil {
-		count++
-	}
-	if fm.Intention != nil {
-		count++
-	}
-	if fm.Approach != nil {
-		count++
-	}
-	if len(fm.PainPoints) > 0 {
-		count++
-	}
-	if fm.AspirationalRef != nil {
-		count++
-	}
-	if len(fm.Constraints) > 0 {
-		count++
-	}
-	if fm.Budget != nil {
-		count++
-	}
-	if fm.AdditionalContext != nil {
-		count++
-	}
-	return count
+// Profile holds the facts the agent has recorded about the user.
+type Profile struct {
+	Occasion      string   `json:"occasion,omitempty"`
+	EventDate     string   `json:"event_date,omitempty"`
+	StyleGoal     string   `json:"style_goal,omitempty"`
+	BudgetMXN     float64  `json:"budget_mxn,omitempty"`
+	RadiusM       int      `json:"radius_m,omitempty"`
+	AllowShipping *bool    `json:"allow_shipping,omitempty"`
+	Constraints   []string `json:"constraints,omitempty"`
+	PainPoints    []string `json:"pain_points,omitempty"`
+	Notes         string   `json:"notes,omitempty"`
 }
 
-// ListMissingCriticalFacts returns the names of critical facts not yet populated.
-func ListMissingCriticalFacts(fm *FactMap) []string {
-	var missing []string
-	if fm == nil || fm.Occasion == nil {
-		missing = append(missing, "occasion")
-	}
-	if fm == nil || fm.Intention == nil {
-		missing = append(missing, "intention")
-	}
-	return missing
+// Option is a button the user can tap.
+type Option struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
-// ConversationMetrics tracks behavioral signals during discovery.
-type ConversationMetrics struct {
-	ConsecutiveShortResponses int  `json:"consecutive_short_responses"`
-	ExitSignalCount           int  `json:"exit_signal_count"`
-	LastResponseWordCount     int  `json:"last_response_word_count"`
-	RepeatedQuestionDetected  bool `json:"repeated_question_detected"`
+// Turn is one user-visible exchange (not the raw LLM traffic).
+type Turn struct {
+	Role      string    `json:"role"` // "user" | "assistant"
+	Text      string    `json:"text"`
+	InputMode string    `json:"input_mode,omitempty"` // assistant: buttons|voice|none; user: button|voice|text
+	Options   []Option  `json:"options,omitempty"`
+	At        time.Time `json:"at"`
 }
 
-// LookStatus tracks the generation state of a single look.
+// PriorityAction is one concrete improvement, shown as a card in the app.
+type PriorityAction struct {
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Impact      string   `json:"impact"` // alto | medio | bajo
+	Effort      string   `json:"effort"` // alto | medio | bajo
+	ProductIDs  []string `json:"product_ids,omitempty"`
+}
+
+// ShoppingItem is one line of the shopping list, with real product options.
+type ShoppingItem struct {
+	Slot        string   `json:"slot"` // upper_body | lower_body | footwear | outerwear | accessory
+	Description string   `json:"description"`
+	Why         string   `json:"why,omitempty"`
+	ProductIDs  []string `json:"product_ids"`
+	Priority    int      `json:"priority,omitempty"`
+}
+
+// Recommendation is the agent's final deliverable.
+type Recommendation struct {
+	Summary         string           `json:"summary"`
+	PriorityActions []PriorityAction `json:"priority_actions"`
+	ShoppingList    []ShoppingItem   `json:"shopping_list"`
+	TotalMXN        float64          `json:"total_mxn"`
+	CreatedAt       time.Time        `json:"created_at"`
+}
+
+// LookPiece is one garment of a look, bound to a real product.
+type LookPiece struct {
+	Slot        string `json:"slot"` // upper_body | lower_body | footwear | outerwear
+	Description string `json:"description,omitempty"`
+	ProductID   string `json:"product_id"`
+}
+
+// Look is an outfit composed by the agent.
+type Look struct {
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Vibe        string      `json:"vibe,omitempty"`
+	Pieces      []LookPiece `json:"pieces"`
+}
+
+// LookStatus tracks virtual try-on generation for a look.
 type LookStatus string
 
 const (
@@ -90,35 +109,17 @@ const (
 	LookStatusFailed     LookStatus = "failed"
 )
 
-// LookPiece describes a single garment slot within a look.
-type LookPiece struct {
-	Slot        string `json:"slot"`        // "upper_body" | "lower_body"
-	Description string `json:"description"` // for RAG search
-	Category    string `json:"category"`    // VTON category
-	Reasoning   string `json:"reasoning"`
-}
-
-// Look is the LLM-composed outfit definition (before VTON generation).
-type Look struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Pieces      []LookPiece `json:"pieces"`
-	Vibe        string     `json:"vibe"`
-}
-
-// LookPieceResult holds the generation result for a single garment piece.
+// LookPieceResult is the try-on output for one piece.
 type LookPieceResult struct {
 	Slot            string `json:"slot"`
 	ProductID       string `json:"product_id,omitempty"`
 	ProductName     string `json:"product_name,omitempty"`
 	ProductImageURL string `json:"product_image_url,omitempty"`
 	TryOnImageURL   string `json:"tryon_image_url,omitempty"`
-	Category        string `json:"category"`
 	GenerationMs    int64  `json:"generation_time_ms,omitempty"`
 }
 
-// LookResult tracks the VTON generation state and output for a single look.
+// LookResult is the try-on output for a whole look.
 type LookResult struct {
 	LookID        string            `json:"look_id"`
 	Status        LookStatus        `json:"status"`
@@ -129,132 +130,121 @@ type LookResult struct {
 	CreatedAt     time.Time         `json:"created_at"`
 }
 
-// TryOnResult caches a virtual try-on generation result.
+// TryOnResult caches a single-garment try-on.
 type TryOnResult struct {
-	ActionID        string    `json:"action_id"`
+	ProductID       string    `json:"product_id"`
+	ActionID        string    `json:"action_id,omitempty"`
 	TryOnImageURL   string    `json:"tryon_image_url"`
 	GarmentName     string    `json:"garment_name"`
-	GarmentSource   string    `json:"garment_source"`
-	CatalogID       string    `json:"catalog_id"`
 	GarmentImageURL string    `json:"garment_image_url"`
 	GenerationMs    int64     `json:"generation_time_ms"`
 	ProviderName    string    `json:"provider_name"`
 	CreatedAt       time.Time `json:"created_at"`
 }
 
-// SessionState tracks the full state of a conversational session.
-type SessionState struct {
-	ID                   string              `json:"id"`
-	Phase                Phase               `json:"phase"`
-	Turn                 int                 `json:"turn"`
-	OutfitAnalysis       any                 `json:"outfit_analysis"`  // *vision.OutfitAnalysis stored as any to avoid circular imports
-	ImageInsights        any                 `json:"image_insights"`   // *vision.ImageInsights stored as any to avoid circular imports
-	Responses            []UserResponse      `json:"responses"`
-	AssistantMessages    []string            `json:"assistant_messages"` // what the bot said each turn
-	FactMap              *FactMap            `json:"fact_map"`
-	Metrics              ConversationMetrics `json:"metrics"`
-	LastBotMessage       string              `json:"last_bot_message"`
-	CoveredCompensations []string            `json:"covered_compensations"` // blind spots already addressed
-	Diagnosis            *StyleDiagnosis     `json:"diagnosis,omitempty"`
-	StyleProfile         *UserStyleProfile   `json:"style_profile,omitempty"`
-	ImageKey             string              `json:"image_key,omitempty"`   // R2 key of the user's photo
-	TryOnResults         []TryOnResult       `json:"tryon_results,omitempty"`
-	Looks                []Look              `json:"looks,omitempty"`
-	LookResults          []LookResult        `json:"look_results,omitempty"`
-	CreatedAt            time.Time           `json:"created_at"`
-	UpdatedAt            time.Time           `json:"updated_at"`
+// State is everything known about one session.
+type State struct {
+	ID       string `json:"id"`
+	Phase    Phase  `json:"phase"`
+	Turn     int    `json:"turn"` // number of user turns processed
+	ImageKey string `json:"image_key,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+
+	Analysis *vision.OutfitAnalysis `json:"analysis,omitempty"`
+	Location *Location              `json:"location,omitempty"`
+	Profile  Profile                `json:"profile"`
+
+	Messages   []llm.Message               `json:"messages"`   // agent memory (user/assistant/tool)
+	Transcript []Turn                      `json:"transcript"` // what the user saw
+	Products   map[string]shopping.Product `json:"products"`   // every product the agent has seen
+	Stores     []shopping.Store            `json:"stores"`     // nearby stores found
+
+	Recommendation *Recommendation `json:"recommendation,omitempty"`
+	Looks          []Look          `json:"looks,omitempty"`
+	LookResults    []LookResult    `json:"look_results,omitempty"`
+	TryOnResults   []TryOnResult   `json:"tryon_results,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// IsCompensationCovered returns true if the blind spot has already been addressed.
-func (s *SessionState) IsCompensationCovered(blindSpot string) bool {
-	for _, c := range s.CoveredCompensations {
-		if c == blindSpot {
-			return true
+// New creates an empty session in the capture phase.
+func New(id string) *State {
+	now := time.Now()
+	return &State{
+		ID:         id,
+		Phase:      PhaseCapture,
+		Messages:   []llm.Message{},
+		Transcript: []Turn{},
+		Products:   map[string]shopping.Product{},
+		Stores:     []shopping.Store{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+}
+
+// AddProducts records products the agent has seen, keyed by id.
+func (s *State) AddProducts(ps []shopping.Product) {
+	if s.Products == nil {
+		s.Products = map[string]shopping.Product{}
+	}
+	for _, p := range ps {
+		s.Products[p.ID] = p
+	}
+}
+
+// AddStores records stores, de-duplicated by place id.
+func (s *State) AddStores(ss []shopping.Store) {
+	seen := map[string]bool{}
+	for _, st := range s.Stores {
+		seen[st.PlaceID] = true
+	}
+	for _, st := range ss {
+		if st.PlaceID == "" || !seen[st.PlaceID] {
+			s.Stores = append(s.Stores, st)
+			seen[st.PlaceID] = true
 		}
 	}
-	return false
 }
 
-// MarkCompensationCovered records a blind spot as addressed.
-func (s *SessionState) MarkCompensationCovered(blindSpot string) {
-	if !s.IsCompensationCovered(blindSpot) {
-		s.CoveredCompensations = append(s.CoveredCompensations, blindSpot)
+// ProductsFor resolves ids to products, skipping unknown ones.
+func (s *State) ProductsFor(ids []string) []shopping.Product {
+	out := make([]shopping.Product, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := s.Products[id]; ok {
+			out = append(out, p)
+		}
 	}
+	return out
 }
 
-// UserResponse captures a single user answer during the discovery phase.
-type UserResponse struct {
-	QuestionID string    `json:"question_id"`
-	Category   string    `json:"category"`
-	InputMode  string    `json:"input_mode"` // "button" | "voice"
-	Value      string    `json:"value"`
-	Timestamp  time.Time `json:"timestamp"`
+// LastAssistantOptions returns the buttons offered in the latest assistant turn.
+func (s *State) LastAssistantOptions() []Option {
+	for i := len(s.Transcript) - 1; i >= 0; i-- {
+		if s.Transcript[i].Role == "assistant" {
+			return s.Transcript[i].Options
+		}
+	}
+	return nil
 }
 
-// StyleDiagnosis is the structured output of Phase 3 (diagnosis).
-type StyleDiagnosis struct {
-	Profile UserStyleProfile `json:"profile"`
+// QuestionsAsked counts assistant turns that waited for user input.
+func (s *State) QuestionsAsked() int {
+	n := 0
+	for _, t := range s.Transcript {
+		if t.Role == "assistant" && (t.InputMode == "buttons" || t.InputMode == "voice") {
+			n++
+		}
+	}
+	return n
 }
 
-// UserStyleProfile is the unified style evaluation across all phases.
-type UserStyleProfile struct {
-	// Identity — populated by Phase 1 (image analysis)
-	ColorSeason      string `json:"color_season"`
-	ColorSeasonConf  string `json:"color_season_conf"`
-	KibbeFamily      string `json:"kibbe_family"`
-	KibbeFamilyConf  string `json:"kibbe_family_conf"`
-	CurrentArchetype string `json:"current_archetype"`
-
-	// Context — populated by Phase 2 (discovery)
-	DesiredArchetype  string   `json:"desired_archetype"`
-	Occasion          string   `json:"occasion"`
-	DesiredProjection string   `json:"desired_projection"`
-	Approach          string   `json:"approach"`
-	PainPoints        []string `json:"pain_points"`
-	AspirationalRef   string   `json:"aspirational_ref"`
-	Constraints       []string `json:"constraints"`
-
-	// Evaluation — populated by Phase 3 (diagnosis)
-	Strengths    []string    `json:"strengths"`
-	Gaps         []string    `json:"gaps"`
-	StyleDistance string     `json:"style_distance"`
-	Scores       StyleScores `json:"scores"`
-	GapAnalysis  []GapItem   `json:"gap_analysis"`
-	OverallScore float64     `json:"overall_score"`
-	OverallGrade string      `json:"overall_grade"`
-}
-
-// StyleScores holds 6 evaluation dimensions, each scored 1-10.
-type StyleScores struct {
-	ColorHarmony   int `json:"color_harmony"`
-	Fit            int `json:"fit"`
-	Proportion     int `json:"proportion"`
-	LineHarmony    int `json:"line_harmony"`
-	StyleCoherence int `json:"style_coherence"`
-	OccasionMatch  int `json:"occasion_match"`
-}
-
-// GapItem represents a single dimension gap between current and target scores.
-type GapItem struct {
-	Dimension  string `json:"dimension"`
-	Current    int    `json:"current"`
-	Target     int    `json:"target"`
-	Gap        int    `json:"gap"`
-	Priority   int    `json:"priority"`
-	Actionable string `json:"actionable"`
-}
-
-// PersonalizedAdvice is the output of Phase 4 (recommendation).
-type PersonalizedAdvice struct {
-	SpokenSummary   string           `json:"spoken_summary"`
-	PriorityActions []PriorityAction `json:"priority_actions"`
-}
-
-type PriorityAction struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Impact      string   `json:"impact"`                        // "alto", "medio", "bajo"
-	Effort      string   `json:"effort"`                        // "alto", "medio", "bajo"
-	ProductIDs  []string `json:"product_ids,omitempty"`
+// FindTryOn returns a cached try-on for a product, if any.
+func (s *State) FindTryOn(productID string) *TryOnResult {
+	for i := range s.TryOnResults {
+		if s.TryOnResults[i].ProductID == productID {
+			return &s.TryOnResults[i]
+		}
+	}
+	return nil
 }

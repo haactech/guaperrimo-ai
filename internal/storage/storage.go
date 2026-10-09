@@ -22,4 +22,6 @@ type ImageStore interface {
 	Upload(ctx context.Context, input UploadInput) (*UploadOutput, error)
 	Download(ctx context.Context, key string) ([]byte, error)
 	ListKeys(ctx context.Context, prefix string) ([]string, error)
+	// URL returns the public URL for a stored key.
+	URL(key string) string
 }

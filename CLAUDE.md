@@ -1,88 +1,74 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
-## Project Overview
+## What this is
 
-StyleRAG is a B2B AI-powered image styling advisor for fashion e-commerce. It replaces traditional catalog search with a conversational advisor that analyzes user style via photos, understands emotional intent, and recommends complete outfits from retailer inventory.
+Backend of **guaperrimo.ai**, a B2C iOS app for men in Mexico who do not know
+fashion: the user takes a full-body photo, a stylist agent asks a few
+questions by voice or buttons, and returns what favours him, two or three
+complete looks, and a **shopping list of real articles within his budget,
+prioritising stores at walking distance** (shipping only if he accepts it).
+Spanish only, menswear only, Mexico only.
 
-**Current state:** Project scaffolding complete. Core interfaces defined, implementation in progress.
+The iOS client lives in a separate repository (`guaperrimo.ai`, Swift/SwiftUI).
 
-## Build Commands
+## Architecture (agent-centric, no RAG)
+
+```
+iOS ──POST /session/{id}/image──▶ R2 (photo)
+iOS ──POST /session/{id}/chat───▶ chat handler
+                                    │ first turn: vision analysis of the photo (LLM, JSON)
+                                    ▼
+                                agent.Runner ── tool loop (LLM with tool calling)
+                                    ├─ update_profile        facts: occasion, date, budget, radius, shipping
+                                    ├─ set_location          geocode "colonia, ciudad" (SerpAPI Google Maps)
+                                    ├─ find_nearby_stores    physical stores by distance (SerpAPI Google Maps)
+                                    ├─ search_products       real products with price/store/link (SerpAPI Google Shopping)
+                                    ├─ ask_user   (terminal) one question, buttons or voice
+                                    └─ finish_recommendation (terminal) summary + actions + shopping list + looks
+                                    ▼
+                                session.Store (memory or Postgres JSONB)
+                                    ▼ (optional, background)
+                                tryon.LookGenerator ── Google Vertex virtual try-on on product thumbnails
+```
+
+- `internal/llm` — provider-agnostic chat completions with tool calling.
+  `OpenAICompat` talks to Mistral, Moonshot/Kimi or OpenAI; flavour quirks live there.
+- `internal/vision` — photo → `OutfitAnalysis` (colour season, Kibbe family,
+  archetype, fit scores). `Summarize` renders it for the agent's system prompt.
+- `internal/agent` — the runner, tool schemas and the system prompt (Spanish).
+  Go validates the final recommendation: product ids must come from
+  `search_products`, and the list is rejected once if it exceeds the budget.
+- `internal/shopping` — `Provider` interface; `SerpAPI` (real) and `Fake`
+  (deterministic, used when `SERPAPI_KEY` is empty and in tests). Merchant
+  names are matched against nearby stores to flag "available near you".
+- `internal/session` — JSON state (profile, agent memory, products seen,
+  recommendation, looks) with `MemoryStore` and `PostgresStore`.
+  `Update` does read-modify-write under a lock so background jobs never clobber a turn.
+- `internal/tryon` — Vertex VTON provider, safe image download, look generator.
+- `internal/api` — handlers, DTOs, optional `X-API-Key` middleware.
+
+## Commands
 
 ```bash
-# Build the server
-go build ./cmd/server
-
-# Run the server
-go run ./cmd/server
-
-# Run tests
-go test ./...
-
-# Build Docker image
-docker build -t stylerag .
-
-# Database migrations (Flyway)
-flyway -configFiles=flyway.conf migrate    # Run pending migrations
-flyway -configFiles=flyway.conf info       # Check migration status
-flyway -configFiles=flyway.conf validate   # Validate migrations
+go build ./...          # build
+go test ./...           # unit tests (no network: fakes + httptest)
+go run ./cmd/server     # run (reads .env)
+docker compose up       # app + postgres
+go run ./cmd/tryontest -person p.jpg -garment g.jpg   # VTON smoke test
 ```
 
-## Tech Stack
+## Configuration
 
-- **Language:** Go (monolith)
-- **Vector DB:** Qdrant (product embeddings, semantic search)
-- **Session Store:** Redis (user style profiles with TTL)
-- **Relational DB:** PostgreSQL (product metadata, retailer config, metrics)
-- **LLM:** Anthropic/OpenAI via adapter pattern (provider-agnostic)
-- **Speech-to-Text:** Avalon API (Aqua Voice)
-- **Deployment:** Docker + fly.io or Railway
+See `.env.example`. Required: an LLM key and the R2 variables. Optional:
+`SERPAPI_KEY` (without it products are fake), `POSTGRES_URL` (without it
+sessions are in memory), `GCP_PROJECT_ID` (enables try-on), `API_KEY`.
 
-## Project Structure
+## Conventions
 
-```
-stylerag/
-├── cmd/server/main.go              # Entry point
-├── internal/
-│   ├── agent/                      # Orchestrator, tools, prompts
-│   ├── rag/                        # Vector search + re-ranking engine
-│   ├── vision/                     # Proxy to multimodal models
-│   ├── voice/                      # STT (Avalon) + WebSocket streaming
-│   ├── llm/                        # Provider interface + adapters
-│   ├── session/                    # Redis-backed user profiles
-│   ├── catalog/                    # PostgreSQL repo + importers
-│   └── api/                        # HTTP handlers, middleware, DTOs
-├── db/
-│   └── migrations/                 # Flyway SQL migrations (V{timestamp}__)
-├── knowledge/                      # Fashion knowledge base (Markdown)
-├── config/
-├── flyway.conf                     # Flyway configuration
-└── Dockerfile
-```
-
-## Architecture Patterns
-
-- **Adapter pattern** for LLM providers - `LLMProvider` interface with `Complete()` and `StreamComplete()` methods
-- **Tool-use pattern** - Agent calls: `analyze_outfit()`, `search_catalog()`, `get_style_profile()`
-- **Smart routing** - Model selection by task type:
-  - Image analysis: Potent model (Sonnet/GPT-4o)
-  - Preference collection: Economy model (Haiku/4o-mini)
-  - Style translation & results presentation: Potent model
-
-## Key Design Decisions
-
-- Voice-first interaction (via Avalon STT) for lower friction
-- Target: p95 latency < 2 seconds
-- Estimated cost per session: ~$0.033 USD (LLM ~$0.020 + STT ~$0.013)
-- PoC scope: Men 25-35, smart casual style, using Kaggle Fashion Product Images dataset (~44K images)
-- Embedding model TBD (needs benchmark: CLIP vs text-embedding-3 vs Cohere)
-
-## Next Implementation Steps
-
-1. Download Kaggle Fashion dataset & analyze attributes
-2. Benchmark embedding models
-3. Implement LLM provider adapters (Anthropic, OpenAI)
-4. Implement session manager with Redis
-5. Ingest pipeline: Load dataset into Qdrant
-6. First functional query: Text-based search with embeddings
+- Tool results sent back to the model are compact JSON; keep them small.
+- Every agent turn must end with `ask_user` or `finish_recommendation`; the
+  runner treats plain text as an open question and caps steps and questions.
+- Never log user transcripts at Info; never return raw LLM output in HTTP errors.
+- Keep `docs/API.md` in sync with `internal/api/dto.go`; the iOS app depends on it.

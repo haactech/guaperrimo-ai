@@ -67,19 +67,12 @@ Note: implementation parses only bytesBase64Encoded from predictions[0]. The mim
 Stub implementation only. `Generate()` returns error "FASHN provider not yet implemented".
 API key and mode are configured but never used.
 
-## Look Generation Pipeline
+## Look Generation Pipeline (v2)
 
-LookComposer (LLM) → ComposeLooks() → []session.Look (stored in session)
-LookGenerator (background goroutine) → GenerateAll() → per-look VTON generation
-- Ordered: upper_body first, then lower_body (for chaining)
-- Chaining: output of upper_body VTON used as person image input for lower_body VTON
-- Results polled via GET /session/{id}/looks
-- Status: pending → generating → ready | failed
-
-## Category Mapper
-
-MapActionToCategory() in category_mapper.go — keyword matching on Spanish and English terms.
-Only affects local routing logic; NOT sent to the Vertex AI API.
+The agent's `finish_recommendation` binds each look piece to a real product id.
+`tryon.LookGenerator.GenerateAll` downloads each product thumbnail, runs VTON per
+piece (upper_body first, chaining the output as the next person image), uploads to
+R2 and writes results through `session.Store.Update`. Polled via `GET /session/{id}/looks`.
 
 ## CLI Test Tool
 

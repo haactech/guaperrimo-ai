@@ -1,3 +1,4 @@
+// Command server runs the guaperrimo.ai stylist backend.
 package main
 
 import (
@@ -9,13 +10,12 @@ import (
 	"syscall"
 	"time"
 
+	"stylerag/internal/agent"
 	"stylerag/internal/api"
-	"stylerag/internal/catalog"
 	"stylerag/internal/config"
-	"stylerag/internal/database"
 	"stylerag/internal/llm"
-	"stylerag/internal/rag"
 	"stylerag/internal/session"
+	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
 	"stylerag/internal/telemetry"
 	"stylerag/internal/tryon"
@@ -25,169 +25,115 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Initialize OpenTelemetry tracing
-	otelShutdown, err := telemetry.Init(context.Background(), "stylerag", "0.1.0")
+	otelShutdown, err := telemetry.Init(context.Background(), "guaperrimo", "0.2.0")
 	if err != nil {
-		slog.Error("failed to initialize telemetry", "error", err)
+		slog.Error("telemetry init failed", "error", err)
 		os.Exit(1)
 	}
 	defer otelShutdown(context.Background())
 
-	logger := slog.New(telemetry.NewTracedHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: cfg.LogLevel,
-	})))
-	slog.SetDefault(logger)
+	slog.SetDefault(slog.New(telemetry.NewTracedHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))))
+	ctx := context.Background()
 
-	initCtx := context.Background()
-
-	imageStore, err := storage.NewR2Store(initCtx, cfg)
-	if err != nil {
-		slog.ErrorContext(initCtx, "failed to initialize R2 storage", "error", err)
+	if err := cfg.Validate(); err != nil {
+		slog.ErrorContext(ctx, "invalid configuration", "error", err)
 		os.Exit(1)
 	}
 
-	// PostgreSQL connection pool + repositories
-	var (
-		catalogRepo  *catalog.PostgresRepository
-		retailerRepo *database.RetailerRepo
-		sessionRepo  *database.SessionRepo
-	)
+	images, err := storage.NewR2Store(ctx, cfg)
+	if err != nil {
+		slog.ErrorContext(ctx, "r2 init failed", "error", err)
+		os.Exit(1)
+	}
+
+	// LLM: chat+tools and vision may be different models of the same provider.
+	flavor := llm.Flavor(cfg.LLMProvider)
+	if cfg.LLMProvider == "kimi" {
+		flavor = llm.FlavorMoonshot
+	}
+	chatLLM := llm.NewOpenAICompat(llm.OpenAICompatConfig{BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel, Flavor: flavor, MaxRetries: 2})
+	visionLLM := llm.NewOpenAICompat(llm.OpenAICompatConfig{BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.VisionModel, Flavor: flavor, MaxRetries: 1})
+	slog.InfoContext(ctx, "llm configured", "provider", cfg.LLMProvider, "chat_model", cfg.LLMModel, "vision_model", cfg.VisionModel)
+
+	// Shopping provider: SerpAPI when a key exists, otherwise deterministic fake data.
+	var shop shopping.Provider
+	if cfg.SerpAPIKey != "" && cfg.ShoppingProvider != "fake" {
+		shop = shopping.NewSerpAPI(cfg.SerpAPIKey, cfg.SearchLocation)
+	} else {
+		shop = shopping.Fake{}
+		slog.WarnContext(ctx, "SERPAPI_KEY not set: using FAKE products and stores")
+	}
+	slog.InfoContext(ctx, "shopping configured", "provider", shop.Name(), "location", cfg.SearchLocation, "radius_m", cfg.DefaultRadiusM)
+
+	// Session store.
+	var store session.Store
 	if cfg.PostgresURL != "" {
-		dbPool, err := database.NewPostgresPool(initCtx, cfg.PostgresURL)
+		pg, err := session.NewPostgresStore(ctx, cfg.PostgresURL)
 		if err != nil {
-			slog.ErrorContext(initCtx, "failed to connect to PostgreSQL", "error", err)
+			slog.ErrorContext(ctx, "postgres init failed", "error", err)
 			os.Exit(1)
 		}
-		defer dbPool.Close()
-		slog.InfoContext(initCtx, "connected to PostgreSQL")
-
-		catalogRepo = catalog.NewPostgresRepository(dbPool)
-		retailerRepo = database.NewRetailerRepo(dbPool)
-		sessionRepo = database.NewSessionRepo(dbPool)
+		defer pg.Close()
+		store = pg
+		slog.InfoContext(ctx, "sessions: postgres")
 	} else {
-		slog.WarnContext(initCtx, "POSTGRES_URL not set, running without database")
+		mem := session.NewMemoryStore(cfg.SessionTTL)
+		defer mem.Stop()
+		store = mem
+		slog.WarnContext(ctx, "sessions: in-memory (lost on restart)", "ttl", cfg.SessionTTL)
 	}
 
-	// LLM providers and router
-	var potentProvider, economyProvider llm.Provider
-	switch cfg.LLMProvider {
-	case "mistral":
-		slog.InfoContext(initCtx, "using Mistral LLM provider", "potent", cfg.MistralPotentModel, "economy", cfg.MistralEconomyModel, "api_key_len", len(cfg.MistralAPIKey), "api_key_prefix", cfg.MistralAPIKey[:min(4, len(cfg.MistralAPIKey))])
-		potentProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralPotentModel)
-		economyProvider = llm.NewMistralProvider(cfg.MistralAPIKey, cfg.MistralEconomyModel)
-	default: // "kimi"
-		slog.InfoContext(initCtx, "using Kimi LLM provider", "potent", cfg.KimiPotentModel, "economy", cfg.KimiEconomyModel)
-		potentProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiPotentModel)
-		economyProvider = llm.NewKimiProvider(cfg.MoonshotAPIKey, cfg.KimiEconomyModel)
-	}
-	llmRouter := llm.NewRouter(potentProvider, economyProvider)
+	runner := agent.NewRunner(chatLLM, agent.Deps{
+		Shopping:        shop,
+		DefaultRadiusM:  cfg.DefaultRadiusM,
+		DefaultLocation: cfg.SearchLocation,
+	}, cfg.AgentMaxSteps, cfg.AgentMaxQuestions)
 
-	// Vision: analyzer (potent) + style advisor (economy)
-	analyzer := vision.NewLLMAnalyzer(llmRouter)
-	advisor := vision.NewStyleAdvisor(llmRouter)
-
-	// RAG engine (optional — degrades gracefully if not configured)
-	var ragEngine rag.Engine
-	if cfg.QdrantURL != "" && cfg.OpenAIAPIKey != "" && catalogRepo != nil {
-		embedder := rag.NewOpenAIEmbedder(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
-		ragEngine = rag.NewQdrantEngine(cfg.QdrantURL, cfg.QdrantCollection, embedder, catalogRepo)
-		slog.InfoContext(initCtx, "RAG engine initialized", "qdrant", cfg.QdrantURL, "model", cfg.EmbeddingModel)
-	} else {
-		slog.WarnContext(initCtx, "RAG engine disabled",
-			"qdrant_url_set", cfg.QdrantURL != "",
-			"openai_key_set", cfg.OpenAIAPIKey != "",
-			"catalog_repo_set", catalogRepo != nil,
-		)
-	}
-
-	// Conversational advisor dependencies
-	sessionStore := session.NewInMemoryStore(30 * time.Minute)
-	discovery := vision.NewDiscoveryManager(llmRouter)
-	diagnosis := vision.NewDiagnosisGenerator(llmRouter)
 	chatDeps := &api.ChatDeps{
-		Store:      sessionStore,
-		ImageStore: imageStore,
-		Analyzer:   analyzer,
-		Discovery:  discovery,
-		Diagnosis:  diagnosis,
-		Advisor:    advisor,
-		RAGEngine:  ragEngine,
+		Store:       store,
+		Images:      images,
+		Analyzer:    vision.NewLLMAnalyzer(visionLLM),
+		Runner:      runner,
+		TurnTimeout: cfg.AgentTurnTimeout,
 	}
 
-	_ = retailerRepo // will be used for auth middleware
-	_ = sessionRepo  // will be used for analytics tracking
-
-	// Virtual Try-On (optional — degrades gracefully)
-	if err := cfg.SetupGCPCredentials(); err != nil {
-		slog.ErrorContext(initCtx, "failed to setup GCP credentials", "error", err)
-	}
+	// Virtual try-on is optional.
 	var tryonDeps *api.TryOnDeps
 	if cfg.GCPProjectID != "" {
-		var vtonProvider tryon.VTONProvider
-		switch cfg.VTONProvider {
-		case "fashn":
-			vtonProvider = &tryon.FashnVTON{
-				APIKey:     cfg.FashnAPIKey,
-				BaseURL:    "https://api.fashn.ai/v1",
-				Mode:       cfg.FashnMode,
-				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
-			}
-		default:
-			vtonProvider = &tryon.GoogleVertexVTON{
-				ProjectID:  cfg.GCPProjectID,
-				Region:     cfg.GCPRegion,
-				BaseSteps:  cfg.VTONBaseSteps,
-				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
-			}
+		if err := cfg.SetupGCPCredentials(); err != nil {
+			slog.ErrorContext(ctx, "gcp credentials", "error", err)
 		}
-		tryonDeps = &api.TryOnDeps{
-			Store:        sessionStore,
-			ImageStore:   imageStore,
-			RAGEngine:    ragEngine,
-			VTONProvider: vtonProvider,
+		vton := &tryon.GoogleVertexVTON{
+			ProjectID:  cfg.GCPProjectID,
+			Region:     cfg.GCPRegion,
+			BaseSteps:  cfg.VTONBaseSteps,
+			HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
 		}
-		slog.InfoContext(initCtx, "VTON enabled", "provider", cfg.VTONProvider)
-
-		// Look generation pipeline (requires VTON + RAG)
-		if ragEngine != nil {
-			lookComposer := tryon.NewLookComposer(llmRouter, cfg.LookCount)
-			lookGenerator := &tryon.LookGenerator{
-				Store:        sessionStore,
-				ImageStore:   imageStore,
-				RAGEngine:    ragEngine,
-				VTONProvider: vtonProvider,
-				Timeout:      cfg.LookGenerationTimeout,
-			}
-			chatDeps.LookComposer = lookComposer
-			chatDeps.LookGenerator = lookGenerator
-			slog.InfoContext(initCtx, "look generation enabled", "look_count", cfg.LookCount, "timeout", cfg.LookGenerationTimeout)
-		} else {
-			slog.WarnContext(initCtx, "look generation disabled (RAG not available)")
+		httpClient := &http.Client{Timeout: 15 * time.Second}
+		tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
+		chatDeps.Looks = &tryon.LookGenerator{
+			Store: store, Images: images, VTON: vton,
+			Timeout: cfg.LookGenerationTimeout, HTTPClient: httpClient, Concurrency: cfg.LookConcurrency,
 		}
+		slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "look_timeout", cfg.LookGenerationTimeout)
 	} else {
-		slog.WarnContext(initCtx, "VTON disabled (GCP_PROJECT_ID not set)")
+		slog.WarnContext(ctx, "vton disabled (GCP_PROJECT_ID not set)")
 	}
 
-	// Avoid typed-nil interface: a (*PostgresRepository)(nil) is not a nil catalog.Repository.
-	var catRepo catalog.Repository
-	if catalogRepo != nil {
-		catRepo = catalogRepo
-	}
-
-	router := api.NewRouter(cfg, imageStore, analyzer, advisor, chatDeps, catRepo, tryonDeps)
+	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps})
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 120 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: cfg.AgentTurnTimeout + 30*time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
-		slog.InfoContext(initCtx, "starting server", "port", cfg.Port)
+		slog.InfoContext(ctx, "server listening", "port", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.ErrorContext(initCtx, "server error", "error", err)
+			slog.ErrorContext(ctx, "server error", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -196,11 +142,10 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	slog.InfoContext(initCtx, "shutting down server")
+	slog.InfoContext(ctx, "shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.ErrorContext(shutdownCtx, "server shutdown error", "error", err)
+		slog.ErrorContext(shutdownCtx, "shutdown error", "error", err)
 	}
 }
