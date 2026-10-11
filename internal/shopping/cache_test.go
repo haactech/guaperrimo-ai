@@ -50,3 +50,22 @@ func TestStripURLHidesAPIKey(t *testing.T) {
 		t.Fatalf("sanitised error = %q", got)
 	}
 }
+
+func TestCacheCollapsesConcurrentLookups(t *testing.T) {
+	inner := &counting{}
+	c := NewCache(inner, time.Minute)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.SearchProducts(context.Background(), ProductQuery{Query: "camisa hombre"}); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if inner.n != 1 {
+		t.Fatalf("5 concurrent identical searches should hit the provider once, got %d", inner.n)
+	}
+}

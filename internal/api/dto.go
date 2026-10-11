@@ -82,7 +82,8 @@ type TryOnResponse struct {
 	ActionID      string      `json:"action_id,omitempty"`
 	ProductID     string      `json:"product_id"`
 	TryOnImageURL string      `json:"tryon_image_url"`
-	GarmentUsed   GarmentInfo `json:"garment_used"`
+	GarmentUsed   string      `json:"garment_used"` // garment name, shown by the app
+	Garment       GarmentInfo `json:"garment"`      // full product details
 	GenerationMs  int64       `json:"generation_time_ms"`
 }
 

@@ -217,7 +217,10 @@ func (r *Renderer) garmentImage(ctx context.Context, sessionID string, p shoppin
 	if p.LargeImage != "" {
 		candidates = append(candidates, p.LargeImage)
 	} else if r.Details != nil && p.SourceID != "" {
-		if d, err := r.Details.ProductDetails(ctx, p.SourceID); err == nil && d != nil {
+		dctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		d, err := r.Details.ProductDetails(dctx, p.SourceID)
+		cancel()
+		if err == nil && d != nil {
 			for i, img := range d.Images {
 				if i >= 3 {
 					break

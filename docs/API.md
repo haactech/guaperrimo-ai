@@ -125,10 +125,14 @@ o, para compatibilidad con la app actual, `{"action_id": "camisa_lino", "garment
 {
   "session_id": "…", "action_id": "camisa_lino", "product_id": "p_…",
   "tryon_image_url": "https://…",
-  "garment_used": {"name": "…", "source": "Zara MX", "catalog_id": "p_…", "image_url": "…", "link": "…"},
+  "garment_used": "Camisa de lino azul marino",
+  "garment": {"name": "…", "source": "Zara MX", "catalog_id": "p_…", "image_url": "…", "link": "…"},
   "generation_time_ms": 24000
 }
 ```
+
+`garment_used` es el nombre de la prenda (la app lo decodifica como texto);
+`garment` trae el detalle completo.
 
 Errores: `404` producto no encontrado, `409` sin recomendación o sin foto,
 `422` producto sin imagen, `502` descarga o generación fallida, `504` timeout.

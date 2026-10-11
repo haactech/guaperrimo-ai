@@ -166,9 +166,13 @@ func slotForAction(req TryOnRequest) string {
 
 func tryOnResponse(sessionID, actionID string, p shopping.Product, url string, ms int64) TryOnResponse {
 	return TryOnResponse{
-		SessionID: sessionID, ActionID: actionID, ProductID: p.ID, TryOnImageURL: url,
-		GarmentUsed:  GarmentInfo{Name: p.Title, Source: p.Store, CatalogID: p.ID, ImageURL: p.Thumbnail, Link: p.Link},
-		GenerationMs: ms,
+		SessionID:     sessionID,
+		ActionID:      actionID,
+		ProductID:     p.ID,
+		TryOnImageURL: url,
+		GarmentUsed:   p.Title,
+		Garment:       GarmentInfo{Name: p.Title, Source: p.Store, CatalogID: p.ID, ImageURL: p.Thumbnail, Link: p.Link},
+		GenerationMs:  ms,
 	}
 }
 

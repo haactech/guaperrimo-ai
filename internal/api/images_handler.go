@@ -25,6 +25,9 @@ func imagesHandler(signed *storage.SignedURLs) http.HandlerFunc {
 		}
 		data, err := signed.Download(r.Context(), key)
 		if err != nil {
+			if r.Context().Err() != nil {
+				return // client cancelled (e.g. a view disappeared); nothing to report
+			}
 			slog.WarnContext(r.Context(), "images: download failed", "key", key, "error", err)
 			writeError(w, http.StatusNotFound, "image not found")
 			return
