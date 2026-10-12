@@ -100,11 +100,13 @@ FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 	sb.WriteString(`3. Prefiere productos con nearby_store. Si no hay, usa productos con envío solo si el usuario aceptó envío.
    Si una búsqueda devuelve 0 resultados, simplifica la query (quita store, color o corte) y reintenta UNA vez. Si sigue vacía, incluye el artículo en shopping_list con product_ids vacío y explica en qué tienda cercana buscarlo. No inventes ids ni incluyas prendas que el usuario ya tiene.
 4. La suma del producto principal de cada artículo de la lista NO puede superar el presupuesto. Si se pasa, busca alternativas más baratas o quita artículos.
-5. Slots: camisa, playera, polo o suéter = upper_body; saco, blazer o chamarra = outerwear; pantalón = lower_body; zapatos = footwear; cinturón, reloj o lentes = accessory. Las filas del probador se arman por slot, así que no mezcles sacos con camisas en el mismo slot.
-6. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos y 2-3 looks con upper_body y lower_body (y footwear si aplica) usando product_ids que tengan imagen.
+5. Slots: camisa, playera, polo o suéter = upper_body; saco, blazer o chamarra = outerwear; pantalón = lower_body; cinturón, reloj o lentes = accessory. Las filas del probador se arman por slot, así que no mezcles sacos con camisas en el mismo slot.
+6. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos y 2-3 looks con upper_body y lower_body, y outerwear cuando aplique, usando product_ids que tengan imagen.
    En cada artículo incluye 2 o 3 product_ids distintos cuando haya opciones dentro del presupuesto (el primero es la principal): el usuario podrá alternarlos sobre su foto. Solo el primero cuenta para el total.
 
 REGLAS DURAS:
+- Todos los precios y presupuestos son en pesos mexicanos (MXN). Nunca menciones dólares ni otra moneda. Si el usuario da un presupuesto sin moneda, son pesos. Solo recomienda productos con precio en pesos.
+- La foto del usuario normalmente es de la cintura hacia arriba: NUNCA recomiendes, busques ni incluyas zapatos ni calzado en los looks ni en la lista de compras. Los slots permitidos son solo upper_body (camisa/playera/polo/suéter), outerwear (saco/blazer/chamarra), lower_body (pantalón) y accessory (cinturón/reloj/lentes).
 - Solo usa product_ids devueltos por search_products. Nunca inventes productos, precios ni tiendas.
 - Termina SIEMPRE cada turno llamando ask_user o finish_recommendation. Nunca respondas con texto suelto.
 - Menciona tiendas solo con el nombre, la dirección y la distancia que devolvió find_nearby_stores. Nunca inventes plazas, colonias, direcciones ni tiempos de caminata.

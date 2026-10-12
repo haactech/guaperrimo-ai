@@ -51,6 +51,9 @@ type Config struct {
 	VTONBaseSteps         int
 	VTONTimeout           time.Duration
 	LookGenerationTimeout time.Duration
+	TryOnMaxPerSession    int
+	TryOnMaxPerDay        int
+	TryOnAutoLooks        bool
 	RenderConcurrency     int
 	PrefetchConcurrency   int
 	MatrixMaxPerSlot      int
@@ -103,6 +106,9 @@ func Load() *Config {
 		VTONBaseSteps:         getEnvInt("VTON_BASE_STEPS", 20),
 		VTONTimeout:           parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
 		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
+		TryOnMaxPerSession:    getEnvInt("TRYON_MAX_PER_SESSION", 4),
+		TryOnMaxPerDay:        getEnvInt("TRYON_MAX_PER_DAY", 10),
+		TryOnAutoLooks:        getEnv("TRYON_AUTO_LOOKS", "false") == "true",
 		RenderConcurrency:     getEnvInt("RENDER_CONCURRENCY", 3),
 		PrefetchConcurrency:   getEnvInt("RENDER_PREFETCH_CONCURRENCY", 2),
 		MatrixMaxPerSlot:      getEnvInt("MATRIX_MAX_PER_SLOT", 3),

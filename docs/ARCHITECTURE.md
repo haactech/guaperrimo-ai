@@ -99,8 +99,8 @@ está en la rama `pre-agents-snapshot`.
 
 ## Probador mix & match (2026-10-08)
 
-El objetivo es que el usuario deslice una fila (arriba, encima, abajo,
-calzado) y vea la combinación sobre su propia foto, y que pueda guardar la que
+El objetivo es que el usuario deslice una fila (arriba, encima, abajo)
+y vea la combinación sobre su propia foto, y que pueda guardar la que
 le gustó con la explicación y las tiendas.
 
 - **Cuadrícula.** `session.BuildMatrix` la deriva de la recomendación: por slot,
@@ -109,7 +109,7 @@ le gustó con la explicación y las tiendas.
   try-on no los renderiza.
 - **Render por prefijos.** `tryon.Renderer` encadena las prendas en orden de
   capas y guarda cada prefijo como un render propio en `State.Renders`. Cambiar
-  los zapatos cuesta una llamada; cambiar la camisa cuesta tantas como filas.
+  el pantalón cuesta una llamada; cambiar la camisa cuesta tantas como filas.
   Las peticiones duplicadas en vuelo se colapsan, la concurrencia está acotada
   y el prefetch de vecinos nunca ocupa el último slot libre, así la petición del
   usuario no espera detrás del trabajo especulativo.

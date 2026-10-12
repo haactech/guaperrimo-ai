@@ -35,7 +35,7 @@ func finishedSession(t *testing.T, imgServer string) (*session.MemoryStore, *mem
 	st.ImageKey = "sessions/sess_mx_1/welcome_1.jpg"
 	st.ImageURL = images.URL(st.ImageKey)
 	st.Stores = []shopping.Store{{PlaceID: "pl1", Name: "Zara Reforma", DistanceM: 400}}
-	for id, title := range map[string]string{"s1": "Camisa lino", "s2": "Camisa oxford", "p1": "Chino beige", "z1": "Mocasín"} {
+	for id, title := range map[string]string{"s1": "Camisa lino", "s2": "Camisa oxford", "p1": "Chino beige", "z1": "Saco ligero"} {
 		p := shopping.Product{ID: id, Title: title, Store: "Zara MX", Price: 500, Currency: "MXN", Thumbnail: imgServer + "/img/" + id}
 		if id == "s1" {
 			p.NearbyStore = &shopping.StoreRef{PlaceID: "pl1", Name: "Zara Reforma", DistanceM: 400}
@@ -47,7 +47,7 @@ func finishedSession(t *testing.T, imgServer string) (*session.MemoryStore, *mem
 		ShoppingList: []session.ShoppingItem{
 			{Slot: "upper_body", Description: "Camisa", Why: "alarga el torso", ProductIDs: []string{"s1", "s2"}, Priority: 1},
 			{Slot: "lower_body", Description: "Chino", Why: "neutro", ProductIDs: []string{"p1"}, Priority: 2},
-			{Slot: "footwear", Description: "Mocasín", ProductIDs: []string{"z1"}, Priority: 3},
+			{Slot: "outerwear", Description: "Saco ligero", ProductIDs: []string{"z1"}, Priority: 3},
 		},
 	}
 	st.Matrix = session.BuildMatrix(st, 3)
@@ -91,13 +91,13 @@ func TestMatrixRenderAndSave(t *testing.T) {
 		t.Fatalf("upper options should carry product fields and why: %v", upper)
 	}
 	def := body["default"].(map[string]any)
-	if def["upper_body"] != "s1" || def["footwear"] != "z1" {
+	if def["upper_body"] != "s1" || def["outerwear"] != "z1" {
 		t.Fatalf("default: %v", def)
 	}
 
-	sel := map[string]any{"selection": map[string]string{"upper_body": "s2", "lower_body": "p1", "footwear": "z1"}}
+	sel := map[string]any{"selection": map[string]string{"upper_body": "s2", "lower_body": "p1", "outerwear": "z1"}}
 	code, body = postJSON(t, base+"/matrix/render", sel, nil)
-	if code != 202 || body["status"] == "ready" || body["key"] != "s2|p1|z1" {
+	if code != 202 || body["status"] == "ready" || body["key"] != "s2|z1|p1" {
 		t.Fatalf("first render request: %d %v", code, body)
 	}
 	var ready bool
@@ -110,18 +110,11 @@ func TestMatrixRenderAndSave(t *testing.T) {
 		t.Fatalf("render never became ready: %d %v", code, body)
 	}
 
-	// the neighbour (s1|p1|z1) was prefetched
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		_, body = getJSON(t, base+"/matrix")
-		renders := body["renders"].([]any)
-		if len(renders) >= 2 || time.Now().After(deadline) {
-			if len(renders) < 2 {
-				t.Fatalf("expected the one-swipe neighbour to be prefetched, got %v", renders)
-			}
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// no speculative renders: only the requested combination exists (each image is billed)
+	time.Sleep(200 * time.Millisecond)
+	_, body = getJSON(t, base+"/matrix")
+	if renders := body["renders"].([]any); len(renders) != 1 {
+		t.Fatalf("only the requested combination may be rendered, got %d: %v", len(renders), renders)
 	}
 
 	code, body = postJSON(t, base+"/saved-looks", map[string]any{"selection": sel["selection"], "note": "para la boda"}, nil)
@@ -129,7 +122,7 @@ func TestMatrixRenderAndSave(t *testing.T) {
 		t.Fatalf("save look: %d %v", code, body)
 	}
 	items := body["items"].([]any)
-	if len(items) != 3 || items[1].(map[string]any)["why"] != "neutro" {
+	if len(items) != 3 || items[2].(map[string]any)["why"] != "neutro" {
 		t.Fatalf("saved items: %v", items)
 	}
 	code, body = getJSON(t, base+"/saved-looks")

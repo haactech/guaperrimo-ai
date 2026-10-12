@@ -49,7 +49,7 @@ func toolDefinitions() []llm.Tool {
 				"occasion":       str("Ocasión o momento: boda, cita, entrevista, oficina, día a día..."),
 				"event_date":     str("Fecha aproximada del evento (YYYY-MM-DD o texto como 'este sábado')"),
 				"style_goal":     str("Cómo quiere verse o qué quiere proyectar"),
-				"budget_mxn":     num("Presupuesto total aproximado en pesos mexicanos"),
+				"budget_mxn":     num("Presupuesto total aproximado en pesos mexicanos (MXN), nunca dólares"),
 				"radius_m":       integer("Distancia máxima a tiendas en metros (1500 = caminable)"),
 				"allow_shipping": boolean("true si acepta comprar en línea con envío a domicilio"),
 				"constraints":    strArr("Cosas que quiere evitar (colores, prendas, estilos)"),
@@ -77,7 +77,7 @@ func toolDefinitions() []llm.Tool {
 			Description: "Busca productos reales a la venta en México. Devuelve ids de producto que DEBES usar en la recomendación.",
 			Parameters: obj(map[string]any{
 				"query":         str("Descripción en español con tipo de prenda, color y corte, más la palabra 'hombre'"),
-				"max_price_mxn": num("Precio máximo por artículo en pesos"),
+				"max_price_mxn": num("Precio máximo por artículo en pesos mexicanos (MXN)"),
 				"store":         str("Nombre de una tienda para dirigir la búsqueda (opcional)"),
 				"limit":         integer("Máximo de resultados, por defecto 6"),
 			}, []string{"query"}),
@@ -108,7 +108,7 @@ func toolDefinitions() []llm.Tool {
 					"product_ids": strArr("ids de search_products que resuelven esta acción"),
 				}, []string{"id", "title", "description", "impact", "effort"}), "2-4 acciones ordenadas por impacto"),
 				"shopping_list": objArr(obj(map[string]any{
-					"slot":        enum("upper_body: camisa/playera/polo/suéter · outerwear: saco/blazer/chamarra · lower_body · footwear · accessory", "upper_body", "lower_body", "footwear", "outerwear", "accessory"),
+					"slot":        enum("upper_body: camisa/playera/polo/suéter · outerwear: saco/blazer/chamarra · lower_body: pantalón · accessory: cinturón/reloj/lentes (nunca calzado)", "upper_body", "lower_body", "outerwear", "accessory"),
 					"description": str("Qué comprar, en lenguaje simple"),
 					"why":         str("Por qué le favorece, una frase"),
 					"product_ids": strArr("2-3 ids de search_products cuando haya opciones; el primero es la principal y el único que cuenta para el total"),
@@ -119,7 +119,7 @@ func toolDefinitions() []llm.Tool {
 					"description": str("Una frase"),
 					"vibe":        str("ej. casual elevado"),
 					"pieces": objArr(obj(map[string]any{
-						"slot":       enum("slot", "upper_body", "lower_body", "footwear", "outerwear"),
+						"slot":       enum("slot", "upper_body", "lower_body", "outerwear"),
 						"product_id": str("id de search_products con imagen"),
 					}, []string{"slot", "product_id"}), "prendas del look"),
 				}, []string{"name", "pieces"}), "2-3 looks completos"),

@@ -95,7 +95,7 @@ func newFixture(t *testing.T) *fixture {
 
 	st := session.New("r1")
 	st.ImageKey = "sessions/r1/welcome.jpg"
-	for id, title := range map[string]string{"s1": "Camisa", "s2": "Polo", "p1": "Pantalón", "p2": "Chino", "z1": "Zapatos", "z2": "Tenis"} {
+	for id, title := range map[string]string{"s1": "Camisa", "s2": "Polo", "p1": "Pantalón", "p2": "Chino", "z1": "Saco", "z2": "Blazer"} {
 		st.Products[id] = shopping.Product{ID: id, Title: title, Price: 100, Thumbnail: srv.URL + "/img/" + id}
 	}
 	if err := store.Save(context.Background(), st); err != nil {
@@ -106,7 +106,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func combo(ids ...string) []session.ComboPiece {
-	slots := []string{"upper_body", "lower_body", "footwear"}
+	slots := []string{"upper_body", "outerwear", "lower_body"}
 	out := make([]session.ComboPiece, len(ids))
 	for i, id := range ids {
 		out[i] = session.ComboPiece{Slot: slots[i], ProductID: id}
@@ -118,31 +118,31 @@ func TestRenderChainsAndReusesPrefixes(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	rd, err := f.r.Render(ctx, "r1", combo("s1", "p1", "z1"))
-	if err != nil || rd.Status != session.LookStatusReady || rd.Key != "s1|p1|z1" || rd.ImageURL == "" {
+	rd, err := f.r.Render(ctx, "r1", combo("s1", "z1", "p1"))
+	if err != nil || rd.Status != session.LookStatusReady || rd.Key != "s1|z1|p1" || rd.ImageURL == "" {
 		t.Fatalf("render: %+v %v", rd, err)
 	}
 	if f.vton.count() != 3 {
 		t.Fatalf("expected 3 vton calls, got %d", f.vton.count())
 	}
 	// the second garment renders on top of the first result, not the base photo
-	if string(f.vton.calls[1].PersonImage) != "person+garment-s1" || string(f.vton.calls[2].PersonImage) != "person+garment-s1+garment-p1" {
+	if string(f.vton.calls[1].PersonImage) != "person+garment-s1" || string(f.vton.calls[2].PersonImage) != "person+garment-s1+garment-z1" {
 		t.Fatalf("chaining broken: %q / %q", f.vton.calls[1].PersonImage, f.vton.calls[2].PersonImage)
 	}
 	st, _ := f.store.Get(ctx, "r1")
-	for _, k := range []string{"s1", "s1|p1", "s1|p1|z1"} {
+	for _, k := range []string{"s1", "s1|z1", "s1|z1|p1"} {
 		if st.Renders[k].Status != session.LookStatusReady {
 			t.Errorf("prefix %s not ready: %+v", k, st.Renders[k])
 		}
 	}
 
-	if _, err := f.r.Render(ctx, "r1", combo("s1", "p1", "z1")); err != nil || f.vton.count() != 3 {
+	if _, err := f.r.Render(ctx, "r1", combo("s1", "z1", "p1")); err != nil || f.vton.count() != 3 {
 		t.Fatalf("same combo must be free (calls=%d err=%v)", f.vton.count(), err)
 	}
-	if _, err := f.r.Render(ctx, "r1", combo("s1", "p2", "z1")); err != nil || f.vton.count() != 5 {
+	if _, err := f.r.Render(ctx, "r1", combo("s1", "z2", "p1")); err != nil || f.vton.count() != 5 {
 		t.Fatalf("swapping pants should cost 2 calls, calls=%d err=%v", f.vton.count(), err)
 	}
-	if _, err := f.r.Render(ctx, "r1", combo("s1", "p1", "z2")); err != nil || f.vton.count() != 6 {
+	if _, err := f.r.Render(ctx, "r1", combo("s1", "z1", "p2")); err != nil || f.vton.count() != 6 {
 		t.Fatalf("swapping shoes should cost 1 call, calls=%d err=%v", f.vton.count(), err)
 	}
 }
@@ -155,7 +155,7 @@ func TestConcurrentDuplicateRendersCollapse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := f.r.Render(context.Background(), "r1", combo("s1", "p1", "z1")); err != nil {
+			if _, err := f.r.Render(context.Background(), "r1", combo("s1", "z1", "p1")); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -168,16 +168,16 @@ func TestConcurrentDuplicateRendersCollapse(t *testing.T) {
 
 func TestRenderFailureMarksTheBrokenPrefix(t *testing.T) {
 	f := newFixture(t)
-	f.vton.fail["Pantalón"] = true
-	_, err := f.r.Render(context.Background(), "r1", combo("s1", "p1", "z1"))
+	f.vton.fail["Saco"] = true
+	_, err := f.r.Render(context.Background(), "r1", combo("s1", "z1", "p1"))
 	if err == nil {
 		t.Fatal("expected failure")
 	}
 	st, _ := f.store.Get(context.Background(), "r1")
-	if st.Renders["s1"].Status != session.LookStatusReady || st.Renders["s1|p1"].Status != session.LookStatusFailed || st.Renders["s1|p1"].Error == "" {
+	if st.Renders["s1"].Status != session.LookStatusReady || st.Renders["s1|z1"].Status != session.LookStatusFailed || st.Renders["s1|z1"].Error == "" {
 		t.Fatalf("prefix states: %+v", st.Renders)
 	}
-	if full := st.Renders["s1|p1|z1"]; full.Status != session.LookStatusFailed || full.Error == "" {
+	if full := st.Renders["s1|z1|p1"]; full.Status != session.LookStatusFailed || full.Error == "" {
 		t.Fatalf("the full combination must be marked failed so the app can show it: %+v", full)
 	}
 	if f.vton.count() != 2 {
@@ -187,11 +187,11 @@ func TestRenderFailureMarksTheBrokenPrefix(t *testing.T) {
 
 func TestRequestRendersInBackground(t *testing.T) {
 	f := newFixture(t)
-	f.r.Request("r1", combo("s1", "p1", "z1"), true)
+	f.r.Request("r1", combo("s1", "z1", "p1"), true)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		st, _ := f.store.Get(context.Background(), "r1")
-		if rd, ok := st.Renders["s1|p1|z1"]; ok && rd.Status == session.LookStatusReady {
+		if rd, ok := st.Renders["s1|z1|p1"]; ok && rd.Status == session.LookStatusReady {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -204,7 +204,7 @@ func TestLookGeneratorUsesRenderer(t *testing.T) {
 	ctx := context.Background()
 	_ = f.store.Update(ctx, "r1", func(st *session.State) error {
 		st.Looks = []session.Look{{ID: "look_1", Name: "Boda", Pieces: []session.LookPiece{
-			{Slot: "footwear", ProductID: "z1"}, {Slot: "upper_body", ProductID: "s1"}, {Slot: "lower_body", ProductID: "p1"},
+			{Slot: "lower_body", ProductID: "p1"}, {Slot: "upper_body", ProductID: "s1"}, {Slot: "outerwear", ProductID: "z1"},
 		}}}
 		st.LookResults = []session.LookResult{{LookID: "look_1", Status: session.LookStatusPending}}
 		return nil
@@ -217,7 +217,7 @@ func TestLookGeneratorUsesRenderer(t *testing.T) {
 	if lr.Status != session.LookStatusReady || lr.FinalImageURL == "" || len(lr.Pieces) != 3 {
 		t.Fatalf("look result: %+v", lr)
 	}
-	if lr.Pieces[0].Slot != "upper_body" || lr.Pieces[0].TryOnImageURL == "" || lr.Pieces[2].Slot != "footwear" {
+	if lr.Pieces[0].Slot != "upper_body" || lr.Pieces[0].TryOnImageURL == "" || lr.Pieces[2].Slot != "lower_body" {
 		t.Fatalf("pieces should be in chain order with their render urls: %+v", lr.Pieces)
 	}
 	if f.vton.count() != 3 {

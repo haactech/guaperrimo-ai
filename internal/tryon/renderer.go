@@ -188,7 +188,7 @@ func (r *Renderer) renderStep(ctx context.Context, st *session.State, prefix []s
 		return fail("no pude descargar la foto de la prenda", err)
 	}
 
-	vtonCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	vtonCtx, cancel := context.WithTimeout(WithSession(ctx, st.ID), r.Timeout)
 	defer cancel()
 	out, err := r.VTON.Generate(vtonCtx, VTONRequest{PersonImage: person, GarmentImage: garment, GarmentDesc: product.Title, Category: piece.Slot})
 	if err != nil {
@@ -364,6 +364,8 @@ func shortKey(key string) string {
 func explainVTONError(err error) string {
 	msg := err.Error()
 	switch {
+	case strings.Contains(msg, ErrBudgetExceeded.Error()):
+		return "límite de pruebas virtuales alcanzado por hoy"
 	case strings.Contains(msg, "BILLING_DISABLED"):
 		return "try-on no disponible: el proyecto de Google Cloud no tiene facturación habilitada"
 	case strings.Contains(msg, "SERVICE_DISABLED") || strings.Contains(msg, "has not been used in project"):

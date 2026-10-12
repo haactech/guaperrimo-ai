@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -88,10 +89,14 @@ func tryonHandler(deps *TryOnDeps) http.HandlerFunc {
 		if timeout <= 0 {
 			timeout = 60 * time.Second
 		}
-		vtonCtx, cancel := context.WithTimeout(ctx, timeout)
+		vtonCtx, cancel := context.WithTimeout(tryon.WithSession(ctx, sessionID), timeout)
 		defer cancel()
 		out, err := deps.VTON.Generate(vtonCtx, tryon.VTONRequest{PersonImage: person, GarmentImage: garment, GarmentDesc: product.Title})
 		if err != nil {
+			if errors.Is(err, tryon.ErrBudgetExceeded) {
+				writeError(w, http.StatusTooManyRequests, "virtual try-on limit reached, try again tomorrow")
+				return
+			}
 			if vtonCtx.Err() != nil {
 				writeError(w, http.StatusGatewayTimeout, "try-on generation timed out")
 				return
@@ -154,11 +159,6 @@ func slotForAction(req TryOnRequest) string {
 	for _, kw := range []string{"pantal", "jeans", "chino", "short", "bermuda"} {
 		if strings.Contains(text, kw) {
 			return "lower_body"
-		}
-	}
-	for _, kw := range []string{"zapat", "tenis", "bota", "sneaker", "mocas"} {
-		if strings.Contains(text, kw) {
-			return "footwear"
 		}
 	}
 	return "upper_body"

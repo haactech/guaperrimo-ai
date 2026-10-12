@@ -195,7 +195,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 			st.Messages = append(st.Messages, llm.ToolResult(call.ID, call.Name, results[i]))
 			out.ToolsUsed = append(out.ToolsUsed, call.Name)
 			if strings.HasPrefix(results[i], `{"error"`) {
-				slog.WarnContext(ctx, "agent: tool error", "session_id", st.ID, "tool", call.Name, "result", truncate(results[i], 300))
+				slog.WarnContext(ctx, "agent: tool error", "session_id", st.ID, "tool", call.Name, "args", truncate(call.Arguments, 300), "result", truncate(results[i], 300))
 			} else {
 				slog.InfoContext(ctx, "agent: tool", "session_id", st.ID, "tool", call.Name, "terminal", isTerminal(call.Name))
 			}
@@ -452,6 +452,14 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			slog.WarnContext(ctx, "agent: product search failed", "query", query, "error", err)
 			return errJSON("la búsqueda falló o tardó demasiado; si ya tienes productos para esta prenda úsalos, si no intenta una sola vez con otra descripción"), nil
 		}
+		// Only peso listings may reach the model or the shopping list.
+		pesos := products[:0]
+		for _, p := range products {
+			if p.Currency == "MXN" {
+				pesos = append(pesos, p)
+			}
+		}
+		products = pesos
 		ts.mu.Lock()
 		shopping.AnnotateNearby(products, ts.st.Stores)
 		ts.st.AddProducts(products)
@@ -500,6 +508,24 @@ func (r *Runner) finish(st *session.State, a finishArgs, attempts *int, now time
 	summary := strings.TrimSpace(a.Summary)
 	if summary == "" {
 		return errJSON("falta summary"), nil
+	}
+	// Shoes cannot be rendered on a waist-up photo; drop them even if the
+	// model ignores the prompt.
+	keptList := a.ShoppingList[:0]
+	for _, it := range a.ShoppingList {
+		if !strings.EqualFold(strings.TrimSpace(it.Slot), "footwear") {
+			keptList = append(keptList, it)
+		}
+	}
+	a.ShoppingList = keptList
+	for li := range a.Looks {
+		keptPieces := a.Looks[li].Pieces[:0]
+		for _, p := range a.Looks[li].Pieces {
+			if !strings.EqualFold(strings.TrimSpace(p.Slot), "footwear") {
+				keptPieces = append(keptPieces, p)
+			}
+		}
+		a.Looks[li].Pieces = keptPieces
 	}
 	if len(a.ShoppingList) == 0 {
 		return errJSON("shopping_list vacía: busca productos con search_products y vuelve a intentar"), nil

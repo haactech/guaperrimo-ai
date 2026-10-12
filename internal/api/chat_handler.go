@@ -30,6 +30,7 @@ type ChatDeps struct {
 	Runner           *agent.Runner
 	Looks            *tryon.LookGenerator // nil = try-on disabled
 	Renderer         *tryon.Renderer      // nil = try-on disabled
+	AutoLooks        bool                 // render the agent's looks automatically after the recommendation (billed)
 	MatrixMaxPerSlot int
 	TurnTimeout      time.Duration
 }
@@ -118,7 +119,7 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			st.Matrix = session.BuildMatrix(st, deps.MatrixMaxPerSlot)
 		}
 		looksGenerating := false
-		if out.IsFinal && deps.Looks != nil && len(st.Looks) > 0 && st.ImageKey != "" {
+		if out.IsFinal && deps.AutoLooks && deps.Looks != nil && len(st.Looks) > 0 && st.ImageKey != "" {
 			st.LookResults = make([]session.LookResult, 0, len(st.Looks))
 			for _, l := range st.Looks {
 				st.LookResults = append(st.LookResults, session.LookResult{LookID: l.ID, Status: session.LookStatusPending, CreatedAt: time.Now()})
@@ -135,14 +136,8 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 		if looksGenerating {
 			go deps.Looks.GenerateAll(context.WithoutCancel(ctx), sessionID)
 		}
-		// Prewarm the grid: the default combination first, then everything one swipe away.
-		if out.IsFinal && deps.Renderer != nil && st.Matrix != nil && st.ImageKey != "" {
-			def := session.Selection(st.Matrix.Default)
-			deps.Renderer.Request(sessionID, st.Matrix.Combo(def), false)
-			for _, n := range st.Matrix.Neighbors(def) {
-				deps.Renderer.Request(sessionID, st.Matrix.Combo(n), true)
-			}
-		}
+		// No prewarm: every try-on image is billed (~1 USD on Vertex), so
+		// images are generated only when the user asks for one.
 
 		slog.InfoContext(ctx, "chat: turn done",
 			"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,

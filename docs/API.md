@@ -152,17 +152,17 @@ de producto.
   "base_image_url": "https://…/welcome_….jpg",
   "slots": [
     {"slot": "upper_body", "label": "Arriba", "options": [{ …Product, "why": "alarga el torso", "priority": 1 }]},
-    {"slot": "lower_body", "label": "Abajo", "options": [ … ]},
-    {"slot": "footwear",   "label": "Calzado", "options": [ … ]}
+    {"slot": "outerwear",  "label": "Encima", "options": [ … ]},
+    {"slot": "lower_body", "label": "Abajo", "options": [ … ]}
   ],
-  "default": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"},
+  "default": {"upper_body": "p_…", "outerwear": "p_…", "lower_body": "p_…"},
   "renders": [{"key": "p_a|p_b|p_c", "selection": {…}, "status": "ready", "image_url": "https://…", "generation_time_ms": 21000}],
   "saved_looks": [SavedLook]
 }
 ```
 
-Las filas van en orden de capas: `upper_body`, `outerwear`, `lower_body`,
-`footwear`. `renders` solo lista combinaciones completas; el servidor cachea
+Las filas van en orden de capas: `upper_body`, `outerwear`, `lower_body`
+(el calzado no se renderiza: la foto suele ser de la cintura hacia arriba). `renders` solo lista combinaciones completas; el servidor cachea
 también los prefijos, por eso cambiar una fila suele costar una sola imagen.
 Al terminar la recomendación se pre-generan la combinación por defecto y todas
 las que están a un swipe de distancia.
@@ -170,7 +170,7 @@ las que están a un swipe de distancia.
 ### `POST /session/{id}/matrix/render`
 
 ```json
-{"selection": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"}}
+{"selection": {"upper_body": "p_…", "outerwear": "p_…", "lower_body": "p_…"}}
 ```
 
 Las filas que falten toman el valor por defecto. Respuestas:
@@ -189,7 +189,7 @@ regresan al instante.
 Guardan la combinación elegida con su explicación para ir de compras.
 
 ```json
-{"selection": {"upper_body": "p_…", "lower_body": "p_…", "footwear": "p_…"}, "note": "para la boda del sábado"}
+{"selection": {"upper_body": "p_…", "outerwear": "p_…", "lower_body": "p_…"}, "note": "para la boda del sábado"}
 ```
 
 ```json

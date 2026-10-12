@@ -23,6 +23,7 @@ vendor/
 # Environment
 .env
 .env.local
+.env.bak*
 
 # Local data
 data/

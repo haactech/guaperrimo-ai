@@ -59,8 +59,8 @@ func TestSearchProductsMapsAndFilters(t *testing.T) {
 	if q.Has("max_price") {
 		t.Fatalf("max_price must not be sent to SerpAPI (it empties the results); filter client-side")
 	}
-	if len(products) != 2 {
-		t.Fatalf("expected the 2499 item filtered out, got %d products", len(products))
+	if len(products) != 1 {
+		t.Fatalf("expected the 2499 item and the USD item filtered out, got %d products", len(products))
 	}
 	p := products[0]
 	if p.Store != "Zara MX" || p.Price != 899 || p.Currency != "MXN" || p.Link != "https://www.google.com/shopping/product/1" || p.Thumbnail != "https://img/1.jpg" || p.Delivery != "Envío gratis" {
@@ -69,11 +69,13 @@ func TestSearchProductsMapsAndFilters(t *testing.T) {
 	if len(p.Tags) != 1 || p.Tags[0] != "Nearby, 2 km" {
 		t.Errorf("extensions not kept: %v", p.Tags)
 	}
-	if products[1].Currency != "USD" {
-		t.Errorf("US$ price should be USD, got %s", products[1].Currency)
+	for _, pr := range products {
+		if pr.Currency != "MXN" || pr.Store == "Amazon.com" {
+			t.Errorf("usd listings are dropped, got %+v", pr)
+		}
 	}
-	if p.ID == "" || p.ID == products[1].ID {
-		t.Errorf("ids must be stable and unique: %s %s", p.ID, products[1].ID)
+	if p.ID == "" {
+		t.Errorf("id must be set")
 	}
 }
 

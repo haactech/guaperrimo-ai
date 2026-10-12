@@ -155,6 +155,9 @@ func (s *SerpAPI) SearchProducts(ctx context.Context, q ProductQuery) ([]Product
 		if item.Title == "" || item.ExtractedPrice < minPlausiblePriceMXN || excludedMerchant(item.Source) {
 			continue
 		}
+		if nonPesoPrice(item.Price) {
+			continue
+		}
 		if q.MaxPrice > 0 && item.ExtractedPrice > q.MaxPrice {
 			continue
 		}
@@ -167,14 +170,22 @@ func (s *SerpAPI) SearchProducts(ctx context.Context, q ProductQuery) ([]Product
 	return products, nil
 }
 
+// nonPesoPrice reports whether a displayed price string is in a foreign
+// currency (the product is then dropped: the app only deals in MXN).
+func nonPesoPrice(price string) bool {
+	up := strings.ToUpper(price)
+	for _, m := range []string{"US", "USD", "€", "EUR", "£"} {
+		if strings.Contains(up, m) {
+			return true
+		}
+	}
+	return false
+}
+
 func mapShoppingItem(item serpShoppingItem) Product {
 	link := item.Link
 	if link == "" {
 		link = item.ProductLink
-	}
-	currency := "MXN"
-	if strings.Contains(strings.ToUpper(item.Price), "US") {
-		currency = "USD"
 	}
 	idSource := link
 	if idSource == "" {
@@ -186,7 +197,7 @@ func mapShoppingItem(item serpShoppingItem) Product {
 		Title:     item.Title,
 		Store:     item.Source,
 		Price:     item.ExtractedPrice,
-		Currency:  currency,
+		Currency:  "MXN",
 		Link:      link,
 		Thumbnail: item.Thumbnail,
 		Delivery:  item.Delivery,

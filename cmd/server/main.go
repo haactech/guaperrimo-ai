@@ -123,12 +123,12 @@ func main() {
 		if err := tryon.CheckCredentials(ctx); err != nil {
 			slog.WarnContext(ctx, "vton disabled: Google credentials not available; run `gcloud auth application-default login` or set GCP_SA_KEY_JSON", "error", err)
 		} else {
-			vton := &tryon.GoogleVertexVTON{
+			vton := tryon.NewBudgetedVTON(&tryon.GoogleVertexVTON{
 				ProjectID:  cfg.GCPProjectID,
 				Region:     cfg.GCPRegion,
 				BaseSteps:  cfg.VTONBaseSteps,
 				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
-			}
+			}, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
 			httpClient := &http.Client{Timeout: 15 * time.Second}
 			var details shopping.DetailResolver
 			if dr, ok := shop.(shopping.DetailResolver); ok && cfg.ResolveProductDetails {
@@ -137,9 +137,10 @@ func main() {
 			renderer := tryon.NewRenderer(store, images, vton, details, httpClient, cfg.RenderConcurrency, cfg.PrefetchConcurrency, cfg.VTONTimeout)
 			tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
 			chatDeps.Renderer = renderer
+			chatDeps.AutoLooks = cfg.TryOnAutoLooks
 			chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
 			matrixDeps.Renderer = renderer
-			slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "render_concurrency", cfg.RenderConcurrency, "product_details", details != nil)
+			slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "render_concurrency", cfg.RenderConcurrency, "product_details", details != nil)
 		}
 	}
 

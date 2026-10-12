@@ -10,14 +10,13 @@ import (
 
 // SlotOrder is the chain order for virtual try-on: inner layers first so the
 // next garment renders on top of the previous result.
-var SlotOrder = []string{"upper_body", "outerwear", "lower_body", "footwear"}
+var SlotOrder = []string{"upper_body", "outerwear", "lower_body"}
 
 // SlotLabels are the Spanish row titles shown in the app.
 var SlotLabels = map[string]string{
 	"upper_body": "Arriba",
 	"outerwear":  "Encima",
 	"lower_body": "Abajo",
-	"footwear":   "Calzado",
 }
 
 // SlotRank orders slots for chaining; unknown slots go last.

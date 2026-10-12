@@ -129,14 +129,8 @@ func renderHandler(deps *MatrixDeps) http.HandlerFunc {
 			}
 			return nil
 		})
+		// Only the requested combination: no speculative neighbours (billed per image).
 		deps.Renderer.Request(st.ID, pieces, false)
-		for _, n := range st.Matrix.Neighbors(sel) {
-			np := st.Matrix.Combo(n)
-			if rd, ok := st.Renders[session.ComboKey(np)]; ok && rd.Status != session.LookStatusFailed {
-				continue
-			}
-			deps.Renderer.Request(st.ID, np, true)
-		}
 
 		status := session.LookStatusPending
 		if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusGenerating {

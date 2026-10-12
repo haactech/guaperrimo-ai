@@ -67,7 +67,7 @@ type PriorityAction struct {
 
 // ShoppingItem is one line of the shopping list, with real product options.
 type ShoppingItem struct {
-	Slot        string   `json:"slot"` // upper_body | lower_body | footwear | outerwear | accessory
+	Slot        string   `json:"slot"` // upper_body | lower_body | outerwear | accessory
 	Description string   `json:"description"`
 	Why         string   `json:"why,omitempty"`
 	ProductIDs  []string `json:"product_ids"`
@@ -85,7 +85,7 @@ type Recommendation struct {
 
 // LookPiece is one garment of a look, bound to a real product.
 type LookPiece struct {
-	Slot        string `json:"slot"` // upper_body | lower_body | footwear | outerwear
+	Slot        string `json:"slot"` // upper_body | lower_body | outerwear
 	Description string `json:"description,omitempty"`
 	ProductID   string `json:"product_id"`
 }

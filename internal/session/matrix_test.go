@@ -16,11 +16,11 @@ func matrixState() *State {
 		ShoppingList: []ShoppingItem{
 			{Slot: "upper_body", ProductIDs: []string{"s1", "s2", "s3", "s4"}, Why: "alarga", Priority: 1},
 			{Slot: "lower_body", ProductIDs: []string{"p1", "noimg", "p2"}, Priority: 2},
-			{Slot: "footwear", ProductIDs: []string{"z1"}, Priority: 3},
+			{Slot: "outerwear", ProductIDs: []string{"z1"}, Priority: 3},
 			{Slot: "accessory", ProductIDs: []string{"belt"}, Priority: 4},
 		},
 	}
-	st.Looks = []Look{{ID: "look_1", Pieces: []LookPiece{{Slot: "lower_body", ProductID: "p2"}, {Slot: "footwear", ProductID: "z1"}}}}
+	st.Looks = []Look{{ID: "look_1", Pieces: []LookPiece{{Slot: "lower_body", ProductID: "p2"}, {Slot: "outerwear", ProductID: "z1"}}}}
 	return st
 }
 
@@ -32,10 +32,10 @@ func TestBuildMatrix(t *testing.T) {
 	if m.Slots[0].Slot != "upper_body" || len(m.Slots[0].Options) != 3 || m.Slots[0].Options[0].ProductID != "s1" || m.Slots[0].Options[0].Why != "alarga" {
 		t.Errorf("upper row: %+v", m.Slots[0])
 	}
-	if m.Slots[1].Slot != "lower_body" || len(m.Slots[1].Options) != 2 {
-		t.Errorf("lower row should skip the product without image: %+v", m.Slots[1])
+	if m.Slots[2].Slot != "lower_body" || len(m.Slots[2].Options) != 2 {
+		t.Errorf("lower row should skip the product without image: %+v", m.Slots[2])
 	}
-	if m.Default["footwear"] != "z1" || m.Slots[2].Label != "Calzado" {
+	if m.Default["outerwear"] != "z1" || m.Slots[1].Label != "Encima" {
 		t.Errorf("default/labels: %+v", m)
 	}
 }
@@ -43,18 +43,18 @@ func TestBuildMatrix(t *testing.T) {
 func TestComboValidateAndNeighbors(t *testing.T) {
 	m := BuildMatrix(matrixState(), 3)
 	sel, msg := m.Validate(Selection{"upper_body": "s2"})
-	if msg != "" || sel["lower_body"] != "p1" || sel["footwear"] != "z1" {
+	if msg != "" || sel["lower_body"] != "p1" || sel["outerwear"] != "z1" {
 		t.Fatalf("validate should fill defaults: %v %s", sel, msg)
 	}
 	if _, msg := m.Validate(Selection{"upper_body": "s4"}); msg == "" {
 		t.Fatal("s4 was cut by maxPerSlot and must be rejected")
 	}
 	combo := m.Combo(sel)
-	if ComboKey(combo) != "s2|p1|z1" {
+	if ComboKey(combo) != "s2|z1|p1" {
 		t.Fatalf("combo key = %s", ComboKey(combo))
 	}
 	n := m.Neighbors(sel)
-	// upper has 2 other options, lower 1, footwear 0
+	// upper has 2 other options, lower 1, outerwear 0
 	if len(n) != 3 {
 		t.Fatalf("neighbors = %d, want 3", len(n))
 	}
