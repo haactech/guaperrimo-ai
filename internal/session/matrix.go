@@ -10,7 +10,9 @@ import (
 
 // SlotOrder is the chain order for virtual try-on: inner layers first so the
 // next garment renders on top of the previous result.
-var SlotOrder = []string{"upper_body", "outerwear", "lower_body"}
+// Pants are not rendered: on waist-up photos the try-on cannot replace them
+// (tested with FASHN and Vertex, Oct 2026). They stay in the shopping list.
+var SlotOrder = []string{"upper_body", "outerwear"}
 
 // SlotLabels are the Spanish row titles shown in the app.
 var SlotLabels = map[string]string{

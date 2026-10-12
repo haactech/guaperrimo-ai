@@ -83,10 +83,15 @@ func TestMatrixRenderAndSave(t *testing.T) {
 		t.Fatalf("matrix: %d %v", code, body)
 	}
 	slots := body["slots"].([]any)
-	if len(slots) != 3 || slots[0].(map[string]any)["label"] != "Arriba" {
+	if len(slots) != 2 || slots[0].(map[string]any)["label"] != "Arriba" {
 		t.Fatalf("slots: %v", slots)
 	}
 	upper := slots[0].(map[string]any)["options"].([]any)
+	for _, sl := range slots {
+		if sl.(map[string]any)["slot"] == "lower_body" {
+			t.Fatalf("lower_body must not be in the grid: %v", slots)
+		}
+	}
 	if len(upper) != 2 || upper[0].(map[string]any)["why"] != "alarga el torso" || upper[0].(map[string]any)["title"] != "Camisa lino" {
 		t.Fatalf("upper options should carry product fields and why: %v", upper)
 	}
@@ -97,7 +102,7 @@ func TestMatrixRenderAndSave(t *testing.T) {
 
 	sel := map[string]any{"selection": map[string]string{"upper_body": "s2", "lower_body": "p1", "outerwear": "z1"}}
 	code, body = postJSON(t, base+"/matrix/render", sel, nil)
-	if code != 202 || body["status"] == "ready" || body["key"] != "s2|z1|p1" {
+	if code != 202 || body["status"] == "ready" || body["key"] != "s2|z1" {
 		t.Fatalf("first render request: %d %v", code, body)
 	}
 	var ready bool
@@ -118,11 +123,11 @@ func TestMatrixRenderAndSave(t *testing.T) {
 	}
 
 	code, body = postJSON(t, base+"/saved-looks", map[string]any{"selection": sel["selection"], "note": "para la boda"}, nil)
-	if code != 200 || body["total_mxn"] != float64(1500) || body["image_url"] == "" || body["note"] != "para la boda" {
+	if code != 200 || body["total_mxn"] != float64(1000) || body["image_url"] == "" || body["note"] != "para la boda" {
 		t.Fatalf("save look: %d %v", code, body)
 	}
 	items := body["items"].([]any)
-	if len(items) != 3 || items[2].(map[string]any)["why"] != "neutro" {
+	if len(items) != 2 || items[0].(map[string]any)["why"] != "alarga el torso" {
 		t.Fatalf("saved items: %v", items)
 	}
 	code, body = getJSON(t, base+"/saved-looks")
@@ -140,7 +145,7 @@ func TestMatrixWithoutTryOn(t *testing.T) {
 	srv, _ := matrixServer(t, false)
 	base := srv.URL + "/session/sess_mx_1"
 	code, body := getJSON(t, base+"/matrix")
-	if code != 200 || body["tryon_available"] != false || len(body["slots"].([]any)) != 3 {
+	if code != 200 || body["tryon_available"] != false || len(body["slots"].([]any)) != 2 {
 		t.Fatalf("grid must work without try-on: %d %v", code, body)
 	}
 	code, _ = postJSON(t, base+"/matrix/render", map[string]any{"selection": map[string]string{}}, nil)

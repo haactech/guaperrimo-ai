@@ -26,14 +26,19 @@ func matrixState() *State {
 
 func TestBuildMatrix(t *testing.T) {
 	m := BuildMatrix(matrixState(), 3)
-	if m == nil || len(m.Slots) != 3 {
-		t.Fatalf("expected 3 slots (no accessory), got %+v", m)
+	if m == nil || len(m.Slots) != 2 {
+		t.Fatalf("expected 2 slots (no lower_body, no accessory), got %+v", m)
 	}
 	if m.Slots[0].Slot != "upper_body" || len(m.Slots[0].Options) != 3 || m.Slots[0].Options[0].ProductID != "s1" || m.Slots[0].Options[0].Why != "alarga" {
 		t.Errorf("upper row: %+v", m.Slots[0])
 	}
-	if m.Slots[2].Slot != "lower_body" || len(m.Slots[2].Options) != 2 {
-		t.Errorf("lower row should skip the product without image: %+v", m.Slots[2])
+	for _, s := range m.Slots {
+		if s.Slot == "lower_body" {
+			t.Errorf("lower_body must not be in the grid: %+v", s)
+		}
+	}
+	if _, ok := m.Default["lower_body"]; ok {
+		t.Errorf("lower_body must not have a default: %+v", m.Default)
 	}
 	if m.Default["outerwear"] != "z1" || m.Slots[1].Label != "Encima" {
 		t.Errorf("default/labels: %+v", m)
@@ -43,20 +48,20 @@ func TestBuildMatrix(t *testing.T) {
 func TestComboValidateAndNeighbors(t *testing.T) {
 	m := BuildMatrix(matrixState(), 3)
 	sel, msg := m.Validate(Selection{"upper_body": "s2"})
-	if msg != "" || sel["lower_body"] != "p1" || sel["outerwear"] != "z1" {
+	if _, hasLower := sel["lower_body"]; msg != "" || hasLower || sel["outerwear"] != "z1" {
 		t.Fatalf("validate should fill defaults: %v %s", sel, msg)
 	}
 	if _, msg := m.Validate(Selection{"upper_body": "s4"}); msg == "" {
 		t.Fatal("s4 was cut by maxPerSlot and must be rejected")
 	}
 	combo := m.Combo(sel)
-	if ComboKey(combo) != "s2|z1|p1" {
+	if ComboKey(combo) != "s2|z1" {
 		t.Fatalf("combo key = %s", ComboKey(combo))
 	}
 	n := m.Neighbors(sel)
-	// upper has 2 other options, lower 1, outerwear 0
-	if len(n) != 3 {
-		t.Fatalf("neighbors = %d, want 3", len(n))
+	// upper has 2 other options, outerwear 0
+	if len(n) != 2 {
+		t.Fatalf("neighbors = %d, want 2", len(n))
 	}
 }
 

@@ -123,3 +123,11 @@ le gustó con la explicación y las tiendas.
   del agente y la cuadrícula comparten imágenes.
 - **Guardado.** `POST /saved-looks` congela la selección con producto, porqué,
   total y tiendas cercanas. Vive en la sesión; con Postgres sobrevive días.
+
+## Try-on con FASHN (2026-10-12)
+
+- Proveedor por defecto `VTON_PROVIDER=fashn` (`tryon-v1.6`, modo `balanced`), unas 14 veces más barato que Vertex (0.075 contra 1.07 USD por imagen).
+- Prueba con la foto real del fundador: con fotos de producto claras (camisa de manga larga, con modelo o plana) FASHN da resultados muy creíbles en unos 10 s. Falló con una camisa de manga corta mal fotografiada y con el pantalón.
+- **El pantalón ya no se renderiza.** En fotos de cintura hacia arriba ni FASHN ni Vertex pueden reemplazarlo. La cuadrícula queda en dos filas, arriba y encima; el pantalón sigue en la lista de compras.
+- Las imágenes viajan en base64 para que FASHN no guarde URLs de la foto del usuario; FASHN no cobra predicciones fallidas.
+- `cmd/tryontest` compara proveedores encadenando prendas sobre una foto, con `-photo-type` y tope `-max` de llamadas.

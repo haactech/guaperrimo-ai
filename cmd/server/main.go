@@ -114,34 +114,22 @@ func main() {
 
 	// Virtual try-on is optional: it needs a GCP project and working Google credentials.
 	var tryonDeps *api.TryOnDeps
-	if cfg.GCPProjectID == "" {
-		slog.WarnContext(ctx, "vton disabled (GCP_PROJECT_ID not set)")
+	if provider, reason := buildVTON(ctx, cfg); provider == nil {
+		slog.WarnContext(ctx, "vton disabled", "reason", reason)
 	} else {
-		if err := cfg.SetupGCPCredentials(); err != nil {
-			slog.ErrorContext(ctx, "gcp credentials", "error", err)
+		vton := tryon.NewBudgetedVTON(provider, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
+		httpClient := &http.Client{Timeout: 15 * time.Second}
+		var details shopping.DetailResolver
+		if dr, ok := shop.(shopping.DetailResolver); ok && cfg.ResolveProductDetails {
+			details = dr
 		}
-		if err := tryon.CheckCredentials(ctx); err != nil {
-			slog.WarnContext(ctx, "vton disabled: Google credentials not available; run `gcloud auth application-default login` or set GCP_SA_KEY_JSON", "error", err)
-		} else {
-			vton := tryon.NewBudgetedVTON(&tryon.GoogleVertexVTON{
-				ProjectID:  cfg.GCPProjectID,
-				Region:     cfg.GCPRegion,
-				BaseSteps:  cfg.VTONBaseSteps,
-				HTTPClient: &http.Client{Timeout: cfg.VTONTimeout},
-			}, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
-			httpClient := &http.Client{Timeout: 15 * time.Second}
-			var details shopping.DetailResolver
-			if dr, ok := shop.(shopping.DetailResolver); ok && cfg.ResolveProductDetails {
-				details = dr
-			}
-			renderer := tryon.NewRenderer(store, images, vton, details, httpClient, cfg.RenderConcurrency, cfg.PrefetchConcurrency, cfg.VTONTimeout)
-			tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
-			chatDeps.Renderer = renderer
-			chatDeps.AutoLooks = cfg.TryOnAutoLooks
-			chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
-			matrixDeps.Renderer = renderer
-			slog.InfoContext(ctx, "vton enabled", "region", cfg.GCPRegion, "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "render_concurrency", cfg.RenderConcurrency, "product_details", details != nil)
-		}
+		renderer := tryon.NewRenderer(store, images, vton, details, httpClient, cfg.RenderConcurrency, cfg.PrefetchConcurrency, cfg.VTONTimeout)
+		tryonDeps = &api.TryOnDeps{Store: store, Images: images, VTON: vton, Timeout: cfg.VTONTimeout, HTTPClient: httpClient}
+		chatDeps.Renderer = renderer
+		chatDeps.AutoLooks = cfg.TryOnAutoLooks
+		chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
+		matrixDeps.Renderer = renderer
+		slog.InfoContext(ctx, "vton enabled", "provider", provider.Name(), "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "product_details", details != nil)
 	}
 
 	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, Matrix: matrixDeps, Signed: images})
@@ -171,5 +159,30 @@ func main() {
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.ErrorContext(shutdownCtx, "shutdown error", "error", err)
+	}
+}
+
+// buildVTON returns the configured try-on provider, or nil and the reason it
+// is disabled.
+func buildVTON(ctx context.Context, cfg *config.Config) (tryon.VTONProvider, string) {
+	switch cfg.VTONProvider {
+	case "fashn":
+		if cfg.FashnAPIKey == "" {
+			return nil, "VTON_PROVIDER=fashn but FASHN_API_KEY is not set"
+		}
+		return &tryon.FashnVTON{APIKey: cfg.FashnAPIKey, Model: cfg.FashnModel, Mode: cfg.FashnMode, HTTPClient: &http.Client{Timeout: 30 * time.Second}}, ""
+	case "google_vertex", "":
+		if cfg.GCPProjectID == "" {
+			return nil, "GCP_PROJECT_ID not set"
+		}
+		if err := cfg.SetupGCPCredentials(); err != nil {
+			return nil, "gcp credentials: " + err.Error()
+		}
+		if err := tryon.CheckCredentials(ctx); err != nil {
+			return nil, "Google credentials not available; run `gcloud auth application-default login` or set GCP_SA_KEY_JSON"
+		}
+		return &tryon.GoogleVertexVTON{ProjectID: cfg.GCPProjectID, Region: cfg.GCPRegion, BaseSteps: cfg.VTONBaseSteps, HTTPClient: &http.Client{Timeout: cfg.VTONTimeout}}, ""
+	default:
+		return nil, "unknown VTON_PROVIDER " + cfg.VTONProvider
 	}
 }

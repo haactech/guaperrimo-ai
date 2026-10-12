@@ -214,14 +214,14 @@ func TestLookGeneratorUsesRenderer(t *testing.T) {
 
 	st, _ := f.store.Get(ctx, "r1")
 	lr := st.LookResults[0]
-	if lr.Status != session.LookStatusReady || lr.FinalImageURL == "" || len(lr.Pieces) != 3 {
+	if lr.Status != session.LookStatusReady || lr.FinalImageURL == "" || len(lr.Pieces) != 2 {
 		t.Fatalf("look result: %+v", lr)
 	}
-	if lr.Pieces[0].Slot != "upper_body" || lr.Pieces[0].TryOnImageURL == "" || lr.Pieces[2].Slot != "lower_body" {
+	if lr.Pieces[0].Slot != "upper_body" || lr.Pieces[0].TryOnImageURL == "" || lr.Pieces[1].Slot != "outerwear" {
 		t.Fatalf("pieces should be in chain order with their render urls: %+v", lr.Pieces)
 	}
-	if f.vton.count() != 3 {
-		t.Fatalf("look should reuse the renderer (3 calls), got %d", f.vton.count())
+	if f.vton.count() != 2 {
+		t.Fatalf("look should reuse the renderer (2 calls, lower_body skipped), got %d", f.vton.count())
 	}
 }
 

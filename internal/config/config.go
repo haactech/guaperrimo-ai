@@ -48,6 +48,10 @@ type Config struct {
 	GCPProjectID          string
 	GCPSAKeyJSON          string
 	GCPRegion             string
+	VTONProvider          string // google_vertex | fashn
+	FashnAPIKey           string
+	FashnModel            string
+	FashnMode             string
 	VTONBaseSteps         int
 	VTONTimeout           time.Duration
 	LookGenerationTimeout time.Duration
@@ -103,6 +107,10 @@ func Load() *Config {
 		GCPProjectID:          getEnv("GCP_PROJECT_ID", ""),
 		GCPSAKeyJSON:          getEnv("GCP_SA_KEY_JSON", ""),
 		GCPRegion:             getEnv("GCP_REGION", "us-central1"),
+		VTONProvider:          getEnv("VTON_PROVIDER", "google_vertex"),
+		FashnAPIKey:           getEnv("FASHN_API_KEY", ""),
+		FashnModel:            getEnv("FASHN_MODEL", "tryon-v1.6"),
+		FashnMode:             getEnv("FASHN_MODE", "balanced"),
 		VTONBaseSteps:         getEnvInt("VTON_BASE_STEPS", 20),
 		VTONTimeout:           parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
 		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
