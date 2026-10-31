@@ -159,6 +159,7 @@ type State struct {
 	Products   map[string]shopping.Product `json:"products"`   // every product the agent has seen
 	Stores     []shopping.Store            `json:"stores"`     // nearby stores found
 
+	Direction      *Direction      `json:"direction,omitempty"` // preview step, before searching
 	Recommendation *Recommendation `json:"recommendation,omitempty"`
 	Looks          []Look          `json:"looks,omitempty"`
 	LookResults    []LookResult    `json:"look_results,omitempty"`

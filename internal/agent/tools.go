@@ -9,6 +9,7 @@ const (
 	toolSearchProducts = "search_products"
 	toolAskUser        = "ask_user"
 	toolFinish         = "finish_recommendation"
+	toolPropose        = "propose_direction"
 )
 
 // --- tiny JSON-schema helpers ---
@@ -93,6 +94,37 @@ func toolDefinitions() []llm.Tool {
 					"label": str("texto del botón, máximo 4 palabras"),
 				}, []string{"id", "label"}), "Opciones cuando input_mode es buttons"),
 			}, []string{"message", "input_mode"}),
+		},
+		{
+			Name:        toolPropose,
+			Description: "Termina el turno mostrando la dirección de estilo: un análisis breve con su paleta según colorimetría y 3-6 ideas de prendas (tipo, colores, texturas, corte) para que el usuario elija las que le gustan ANTES de buscar productos. El servidor agrega una foto de referencia real a cada idea.",
+			Parameters: obj(map[string]any{
+				"message": str("Frase breve para leer en voz alta invitándolo a elegir las prendas que le llamen la atención"),
+				"brief": obj(map[string]any{
+					"summary":      str("2-3 frases simples: qué le favorece según su foto, su colorimetría y su silueta, conectado con la ocasión"),
+					"color_season": str("Estación de color estimada, ej. 'Otoño suave'"),
+					"palette": objArr(obj(map[string]any{
+						"name": str("Nombre del color en español, ej. 'Azul marino'"),
+						"hex":  str("Color en formato #RRGGBB"),
+					}, []string{"name", "hex"}), "3-6 colores que le favorecen"),
+					"avoid": objArr(obj(map[string]any{
+						"name": str("Nombre del color"),
+						"hex":  str("#RRGGBB"),
+						"why":  str("Por qué evitarlo, pocas palabras"),
+					}, []string{"name", "hex"}), "0-3 colores que conviene evitar"),
+					"silhouette": str("Una frase sobre cortes que le favorecen por su silueta"),
+				}, []string{"summary", "palette"}),
+				"ideas": objArr(obj(map[string]any{
+					"slot":          enum("upper_body: camisa/playera/polo/suéter · outerwear: saco/blazer/chamarra · lower_body: pantalón · accessory: cinturón/reloj/lentes (nunca calzado)", "upper_body", "outerwear", "lower_body", "accessory"),
+					"garment":       str("Tipo de prenda concreto, ej. 'Camisa oxford manga larga'"),
+					"colors":        objArr(obj(map[string]any{"name": str("color"), "hex": str("#RRGGBB")}, []string{"name", "hex"}), "1-2 colores de su paleta"),
+					"textures":      strArr("Tela o textura, ej. 'lino', 'algodón oxford', 'punto fino'"),
+					"fit":           str("Corte, ej. 'slim sin ajustar', 'recto'"),
+					"why":           str("Por qué le favorece para esta ocasión, una frase"),
+					"price_min_mxn": num("Precio mínimo esperado en pesos"),
+					"price_max_mxn": num("Precio máximo esperado en pesos, dentro de su presupuesto"),
+				}, []string{"slot", "garment", "colors", "why"}), "3-6 ideas; incluye alternativas distintas en color o textura para ver qué le atrae, cubriendo arriba, encima si aplica y abajo"),
+			}, []string{"message", "brief", "ideas"}),
 		},
 		{
 			Name:        toolFinish,

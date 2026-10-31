@@ -76,6 +76,9 @@ TU ENTREGABLE FINAL (herramienta finish_recommendation):
 	if st.Recommendation != nil {
 		sb.WriteString("- Ya entregaste una recomendación. Si el usuario pide cambios, ajústala y vuelve a llamar finish_recommendation.\n")
 	}
+	if r.Deps.RequirePreview {
+		writeDirectionContext(&sb, st.Direction)
+	}
 	sb.WriteString("\n")
 
 	sb.WriteString(`CÓMO CONVERSAR:
@@ -92,7 +95,17 @@ ANTES DE TERMINAR NECESITAS SABER:
 3. Su ubicación (si es desconocida, pregúntala y llama set_location) y si acepta compras en línea con envío.
 
 FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
-1. find_nearby_stores con la ubicación.
+`)
+	if r.Deps.RequirePreview {
+		sb.WriteString(`0. DIRECCIÓN DE ESTILO (obligatoria antes de buscar productos): cuando ya sepas ocasión y presupuesto, llama propose_direction.
+   - brief: qué le favorece según su foto, su estación de color y su silueta, en 2-3 frases simples; paleta de 3-6 colores con hex; 0-3 colores a evitar.
+   - ideas: 3-6 prendas concretas (tipo, 1-2 colores de su paleta con hex, textura, corte, porqué, rango de precio en pesos dentro del presupuesto). Da alternativas distintas en color o textura para la misma prenda, así aprendemos qué le atrae. Cubre arriba y abajo, y encima si la ocasión lo pide.
+   - El servidor agrega una foto de referencia real a cada idea; el usuario elige las que le gustan y te llega un mensaje [selección].
+   - Después de la [selección]: busca SOLO las ideas elegidas, respetando su color, textura y corte. La referencia de una idea elegida es un producto real que puedes usar como opción si cabe en el presupuesto. No busques ni recomiendes lo que no le llamó la atención.
+   - Si no eligió nada o pidió otra cosa, ajusta según su comentario y vuelve a llamar propose_direction (máximo una vez más); luego decide tú.
+`)
+	}
+	sb.WriteString(`1. find_nearby_stores con la ubicación.
 2. search_products por cada prenda del look, en español, con tipo de prenda, color y corte específicos y la palabra "hombre" (ej. "camisa lino azul marino slim hombre"). Usa "store" para dirigir la búsqueda a una cadena cercana (Zara, H&M, Liverpool, Bershka, Pull&Bear, C&A, Suburbia...).
 `)
 	sb.WriteString(fmt.Sprintf(`   Presupuesto de búsquedas: máximo %d por turno y cada una tarda varios segundos. Pide TODAS las búsquedas de un look en la misma respuesta para que corran en paralelo. Una búsqueda por prenda; repite solo si no hubo resultados útiles.
@@ -108,15 +121,44 @@ REGLAS DURAS:
 - Todos los precios y presupuestos son en pesos mexicanos (MXN). Nunca menciones dólares ni otra moneda. Si el usuario da un presupuesto sin moneda, son pesos. Solo recomienda productos con precio en pesos.
 - La foto del usuario normalmente es de la cintura hacia arriba: NUNCA recomiendes, busques ni incluyas zapatos ni calzado en los looks ni en la lista de compras. Los slots permitidos son solo upper_body (camisa/playera/polo/suéter), outerwear (saco/blazer/chamarra), lower_body (pantalón) y accessory (cinturón/reloj/lentes).
 - Solo usa product_ids devueltos por search_products. Nunca inventes productos, precios ni tiendas.
-- Termina SIEMPRE cada turno llamando ask_user o finish_recommendation. Nunca respondas con texto suelto.
+- Termina SIEMPRE cada turno llamando ask_user, propose_direction o finish_recommendation. Nunca respondas con texto suelto.
 - Menciona tiendas solo con el nombre, la dirección y la distancia que devolvió find_nearby_stores. Nunca inventes plazas, colonias, direcciones ni tiempos de caminata.
 - Si ya entregaste una recomendación y el usuario no pide un cambio concreto, no repitas búsquedas: responde con ask_user.
 `)
 
 	if asked >= r.MaxQuestions && st.Recommendation == nil {
-		sb.WriteString("\nLÍMITE ALCANZADO: no hagas más preguntas. Con lo que tienes, ejecuta el flujo de herramientas y llama finish_recommendation en este turno. Si falta la ubicación, asume envío a domicilio.\n")
+		if r.Deps.RequirePreview && (st.Direction == nil || st.Direction.ChosenAt == nil) {
+			sb.WriteString("\nLÍMITE ALCANZADO: no hagas más preguntas. Con lo que tienes, llama propose_direction en este turno.\n")
+		} else {
+			sb.WriteString("\nLÍMITE ALCANZADO: no hagas más preguntas. Con lo que tienes, ejecuta el flujo de herramientas y llama finish_recommendation en este turno. Si falta la ubicación, asume envío a domicilio.\n")
+		}
 	}
 	return sb.String()
+}
+
+// writeDirectionContext tells the model where the preview step stands.
+func writeDirectionContext(sb *strings.Builder, d *session.Direction) {
+	switch {
+	case d == nil:
+		sb.WriteString("- Dirección de estilo: todavía no la propones. search_products está bloqueada hasta que el usuario elija ideas.\n")
+	case d.ChosenAt == nil:
+		sb.WriteString(fmt.Sprintf("- Dirección de estilo: propuesta (ronda %d), esperando su elección.\n", d.Round))
+	default:
+		var picked []string
+		for _, id := range d.Selected {
+			if i, ok := d.Idea(id); ok {
+				picked = append(picked, describeIdea(i))
+			}
+		}
+		if len(picked) == 0 {
+			sb.WriteString(fmt.Sprintf("- Dirección de estilo: ronda %d, no eligió ninguna idea.\n", d.Round))
+		} else {
+			sb.WriteString("- Ideas que eligió (busca solo estas): " + strings.Join(picked, "; ") + "\n")
+		}
+		if d.Feedback != "" {
+			sb.WriteString("- Su comentario sobre las ideas: " + d.Feedback + "\n")
+		}
+	}
 }
 
 func orUnknown(s string) string {

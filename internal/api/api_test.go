@@ -313,3 +313,62 @@ func TestValidationAndAuth(t *testing.T) {
 	}
 	_ = fmt.Sprintf
 }
+
+func TestPreviewFlow(t *testing.T) {
+	idea := func(slot, garment string) map[string]any {
+		return map[string]any{"slot": slot, "garment": garment, "why": "te favorece", "colors": []map[string]string{{"name": "Azul marino", "hex": "#1F2A44"}}}
+	}
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("a1", "ask_user", map[string]any{"message": "¿Para qué ocasión?", "input_mode": "voice"})),
+		calls(call("u1", "update_profile", map[string]any{"occasion": "boda", "budget_mxn": 2000})),
+		calls(call("p1", "propose_direction", map[string]any{
+			"message": "Elige lo que te llame la atención",
+			"brief":   map[string]any{"summary": "Te van los tonos fríos.", "palette": []map[string]string{{"name": "Azul marino", "hex": "#1F2A44"}}},
+			"ideas":   []map[string]any{idea("upper_body", "Camisa oxford"), idea("outerwear", "Blazer de punto"), idea("lower_body", "Chino recto")},
+		})),
+		calls(call("a2", "ask_user", map[string]any{"message": "Listo, ¿busco en tiendas cercanas?", "input_mode": "voice"})),
+	}}
+	store := session.NewMemoryStore(time.Hour)
+	t.Cleanup(store.Stop)
+	images := &memImages{}
+	runner := agent.NewRunner(model, agent.Deps{Shopping: shopping.Fake{}, MinSearchTime: time.Second, RequirePreview: true}, 8, 4)
+	srv := httptest.NewServer(NewRouter(Deps{Images: images, Store: store,
+		Chat: &ChatDeps{Store: store, Images: images, Analyzer: fakeAnalyzer{}, Runner: runner, TurnTimeout: 10 * time.Second}}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/session/sess_preview_1"
+
+	uploadImage(t, base+"/image")
+	postJSON(t, base+"/chat", map[string]any{"type": "image"}, nil)
+	if code, _ := postJSON(t, base+"/chat", map[string]any{"type": "idea_selection", "selected_ideas": []string{"idea_1"}}, nil); code != 409 {
+		t.Fatalf("selection before a preview should be 409, got %d", code)
+	}
+
+	code, body := postJSON(t, base+"/chat", map[string]any{"type": "text", "text": "una boda, 2000 pesos"}, nil)
+	if code != 200 || body["input_mode"] != "preview" || body["phase"] != "preview" {
+		t.Fatalf("preview turn: %d %v", code, body)
+	}
+	dir := body["direction"].(map[string]any)
+	ideas := dir["ideas"].([]any)
+	first := ideas[0].(map[string]any)
+	if len(ideas) != 3 || first["id"] != "idea_1" || first["reference"].(map[string]any)["thumbnail"] == "" {
+		t.Fatalf("ideas with reference photos expected: %v", ideas)
+	}
+	if dir["brief"].(map[string]any)["palette"].([]any)[0].(map[string]any)["hex"] != "#1F2A44" {
+		t.Fatalf("brief: %v", dir["brief"])
+	}
+
+	if code, _ := postJSON(t, base+"/chat", map[string]any{"type": "idea_selection"}, nil); code != 400 {
+		t.Fatalf("empty selection should be 400, got %d", code)
+	}
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "idea_selection", "selected_ideas": []string{"idea_1", "idea_3"}}, nil)
+	if code != 200 || body["input_mode"] != "voice" || body["direction"] != nil {
+		t.Fatalf("after selection: %d %v", code, body)
+	}
+	st, err := store.Get(context.Background(), "sess_preview_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_3" || strings.Join(d.Rejected, ",") != "idea_2" {
+		t.Fatalf("the pick must be persisted: %+v", st.Direction)
+	}
+}

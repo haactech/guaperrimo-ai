@@ -100,6 +100,7 @@ func main() {
 		DefaultRadiusM:     cfg.DefaultRadiusM,
 		DefaultLocation:    cfg.SearchLocation,
 		MaxSearchesPerTurn: cfg.AgentMaxSearches,
+		RequirePreview:     cfg.AgentPreview,
 	}, cfg.AgentMaxSteps, cfg.AgentMaxQuestions)
 
 	chatDeps := &api.ChatDeps{

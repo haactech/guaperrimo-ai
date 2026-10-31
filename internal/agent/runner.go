@@ -36,6 +36,9 @@ type Deps struct {
 	MaxStores          int           // per find_nearby_stores call
 	MaxSearchesPerTurn int           // search_products calls allowed in one turn
 	MinSearchTime      time.Duration // refuse a search when less than this remains before the turn deadline
+	// RequirePreview makes the agent propose a style direction and wait for
+	// the user's pick before searching products (AGENT_PREVIEW).
+	RequirePreview bool
 }
 
 // Runner executes one conversational turn.
@@ -75,8 +78,12 @@ func NewRunner(p llm.Provider, deps Deps, maxSteps, maxQuestions int) *Runner {
 
 // TurnInput is what the user just did.
 type TurnInput struct {
-	Kind string // "system" (photo ready) | "button" | "voice" | "text"
+	Kind string // "system" (photo ready) | "button" | "voice" | "text" | "selection"
 	Text string
+	// Selected and Feedback carry a "selection" turn: the ideas the user liked
+	// in the preview and an optional comment.
+	Selected []string
+	Feedback string
 }
 
 // TurnOutput is what the app must show next.
@@ -99,7 +106,9 @@ type turnState struct {
 	finishAttempts int
 }
 
-func isTerminal(name string) bool { return name == toolAskUser || name == toolFinish }
+func isTerminal(name string) bool {
+	return name == toolAskUser || name == toolFinish || name == toolPropose
+}
 
 // RunTurn appends the user input, loops over tool calls until the model ends
 // the turn, and mutates st in place (messages, profile, products, result).
@@ -121,6 +130,13 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		userText = "[sistema] La foto del usuario ya fue analizada. Inicia la conversación."
 	case "button":
 		userText = "[botón] " + userText
+	case "selection":
+		if st.Direction == nil {
+			return nil, errors.New("agent: selection without a proposed direction")
+		}
+		picked := st.Direction.Choose(in.Selected, in.Feedback, now)
+		userText = selectionText(st.Direction, picked)
+		in.Text = userText
 	}
 	st.Messages = append(st.Messages, llm.Text(llm.RoleUser, userText))
 	if in.Kind != "system" {
@@ -152,7 +168,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		if len(resp.ToolCalls) == 0 {
 			text := strings.TrimSpace(resp.Content)
 			if text == "" {
-				st.Messages = append(st.Messages, llm.Text(llm.RoleUser, "[sistema] Responde llamando a ask_user o finish_recommendation."))
+				st.Messages = append(st.Messages, llm.Text(llm.RoleUser, "[sistema] Responde llamando a ask_user, propose_direction o finish_recommendation."))
 				continue
 			}
 			// The model answered in plain text: treat it as an open question.
@@ -428,6 +444,10 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return errJSON("falta query"), nil
 		}
 		ts.mu.Lock()
+		if r.Deps.RequirePreview && ts.st.Recommendation == nil && (ts.st.Direction == nil || ts.st.Direction.ChosenAt == nil) {
+			ts.mu.Unlock()
+			return errJSON("todavía no: primero llama propose_direction y espera a que el usuario elija las ideas que le gustan"), nil
+		}
 		if ts.searches >= r.Deps.MaxSearchesPerTurn {
 			ts.mu.Unlock()
 			return errJSON(fmt.Sprintf("límite de %d búsquedas por turno alcanzado; usa los productos que ya tienes y llama finish_recommendation", r.Deps.MaxSearchesPerTurn)), nil
@@ -490,6 +510,48 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		ts.mu.Unlock()
 		return `{"ok":true}`, &TurnOutput{Message: strings.TrimSpace(a.Message), InputMode: mode, Options: opts}
 
+	case toolPropose:
+		var a proposeDirectionArgs
+		if err := json.Unmarshal([]byte(args), &a); err != nil {
+			return errJSON("argumentos inválidos: " + err.Error()), nil
+		}
+		ts.mu.Lock()
+		missing := r.missingForDirection(ts.st)
+		ts.mu.Unlock()
+		if missing != "" {
+			return errJSON("todavía no: falta " + missing + ". Pregúntalo con ask_user y luego propone la dirección"), nil
+		}
+		d, msg := buildDirection(a, ts.now)
+		if msg != "" {
+			return errJSON(msg), nil
+		}
+		r.attachReferences(ctx, d)
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
+		// References are real listings: keep them so the agent can recommend
+		// one later if the user liked it.
+		for i := range d.Ideas {
+			if ref := d.Ideas[i].Reference; ref != nil {
+				ref.NearbyStore = shopping.MatchNearbyStore(ref.Store, ts.st.Stores)
+				ts.st.AddProducts([]shopping.Product{*ref})
+			}
+		}
+		d.Round = 1
+		if ts.st.Direction != nil {
+			d.Round = ts.st.Direction.Round + 1
+		}
+		ts.st.Direction = d
+		ts.st.Phase = session.PhasePreview
+		message := strings.TrimSpace(a.Message)
+		ts.st.Transcript = append(ts.st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: "preview", At: ts.now})
+		var withRef []string
+		for _, i := range d.Ideas {
+			if i.Reference != nil {
+				withRef = append(withRef, i.ID+"="+i.Reference.ID)
+			}
+		}
+		return toJSON(map[string]any{"ok": true, "ideas": len(d.Ideas), "references": withRef}), &TurnOutput{Message: message, InputMode: "preview"}
+
 	case toolFinish:
 		var a finishArgs
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
@@ -533,18 +595,27 @@ func (r *Runner) finish(st *session.State, a finishArgs, attempts *int, now time
 
 	// Drop empty ids (the model uses them when a search found nothing) and
 	// reject ids that never came out of search_products.
+	// The same listing often comes back under several ids (one per offer),
+	// so options are also de-duplicated by store, title and price.
 	var unknown []string
 	clean := func(ids []string) []string {
 		out := make([]string, 0, len(ids))
+		seen := map[string]bool{}
 		for _, id := range ids {
 			id = strings.TrimSpace(id)
 			if id == "" {
 				continue
 			}
-			if _, ok := st.Products[id]; !ok {
+			p, ok := st.Products[id]
+			if !ok {
 				unknown = append(unknown, id)
 				continue
 			}
+			key := fmt.Sprintf("%s|%s|%.0f", strings.ToLower(p.Store), strings.ToLower(p.Title), p.Price)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			out = append(out, id)
 		}
 		return out
@@ -621,6 +692,22 @@ func (r *Runner) finish(st *session.State, a finishArgs, attempts *int, now time
 	st.Phase = session.PhaseDone
 	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: summary, InputMode: "none", At: now})
 	return `{"ok":true}`, &TurnOutput{Message: summary, InputMode: "none", IsFinal: true}
+}
+
+// missingForDirection names what the preview still needs, or "" when it can
+// be proposed. After the question limit the agent proposes with what it has.
+func (r *Runner) missingForDirection(st *session.State) string {
+	if st.QuestionsAsked() >= r.MaxQuestions {
+		return ""
+	}
+	var missing []string
+	if strings.TrimSpace(st.Profile.Occasion) == "" {
+		missing = append(missing, "la ocasión")
+	}
+	if st.Profile.BudgetMXN <= 0 {
+		missing = append(missing, "el presupuesto en pesos")
+	}
+	return strings.Join(missing, " y ")
 }
 
 func (r *Runner) recordAsk(st *session.State, message, mode string, opts []session.Option, now time.Time) {

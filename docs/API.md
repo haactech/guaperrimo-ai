@@ -21,11 +21,12 @@ Request:
 
 ```json
 {
-  "type": "image | button_response | voice_response | text",
+  "type": "image | button_response | voice_response | text | idea_selection",
   "image_url": "opcional, informativo",
   "option_id": "requerido con button_response",
   "transcript": "requerido con voice_response",
-  "text": "requerido con text",
+  "text": "requerido con text; comentario opcional con idea_selection",
+  "selected_ideas": ["idea_1", "idea_3"],
   "location": {"lat": 19.4194, "lng": -99.1616, "label": "Roma Norte"},
   "radius_m": 1500,
   "allow_shipping": true
@@ -40,10 +41,10 @@ Response:
 ```json
 {
   "session_id": "…",
-  "phase": "chat | done",
+  "phase": "chat | preview | done",
   "turn": 2,
   "message": "texto para TTS",
-  "input_mode": "buttons | voice | none",
+  "input_mode": "buttons | voice | preview | none",
   "options": [{"id": "boda", "label": "Boda de día"}],
   "is_final": false,
   "location_known": true,
@@ -61,8 +62,50 @@ aparecen cuando `is_final` es `true`. Después de una recomendación el usuario
 puede seguir hablando; el agente ajusta y puede volver a entregar `is_final`.
 
 Errores: `400` cuerpo o id inválido, `404` sesión inexistente, `409` turno de
-imagen repetido o turno sin foto, `502` fallo del modelo o del análisis,
-`504` timeout del turno.
+imagen repetido, turno sin foto o `idea_selection` sin preview pendiente,
+`502` fallo del modelo o del análisis, `504` timeout del turno.
+
+### Preview de estilo (`AGENT_PREVIEW=true`)
+
+Antes de buscar productos, cuando ya sabe ocasión y presupuesto, el agente
+responde con `input_mode: "preview"`, `phase: "preview"` y un `direction`:
+
+```json
+"direction": {
+  "brief": {
+    "summary": "Por tu tono Deep Autumn…",
+    "color_season": "Deep Autumn",
+    "palette": [{"name": "Verde botella", "hex": "#3E5641"}],
+    "avoid": [{"name": "Negro puro", "hex": "#000000", "why": "apaga tu tono cálido"}],
+    "silhouette": "Cortes rectos, nunca ajustados"
+  },
+  "ideas": [{
+    "id": "idea_1", "slot": "upper_body",
+    "garment": "Camisa de lino manga larga",
+    "colors": [{"name": "Verde botella", "hex": "#3E5641"}],
+    "textures": ["lino"], "fit": "recta, sin ajustar",
+    "why": "fresca y elegante para día",
+    "price_min_mxn": 700, "price_max_mxn": 1200,
+    "reference": Product
+  }],
+  "round": 1,
+  "created_at": "…"
+}
+```
+
+- 3 a 6 ideas, slots `upper_body`, `outerwear`, `lower_body` o `accessory`.
+- `hex` puede faltar si el modelo dio uno inválido; el nombre siempre está.
+- `reference` es un producto real en pesos buscado por el servidor (una
+  búsqueda por idea, en paralelo), elegido para que su título coincida con el
+  color de la idea. Es solo de referencia: el producto final puede ser otro.
+  Puede faltar si la búsqueda no encontró nada.
+
+La app responde con `{"type": "idea_selection", "selected_ideas": [...],
+"text": "comentario opcional"}` (al menos uno de los dos). Las ideas no
+elegidas quedan como rechazadas en la sesión (`direction.selected`,
+`direction.rejected`, `direction.feedback`): es la señal de qué le atrae. El
+agente busca solo las elegidas; si no eligió ninguna, propone otra ronda.
+Mientras no haya elección, `search_products` está bloqueada.
 
 ### Product
 

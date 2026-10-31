@@ -98,6 +98,10 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			writeError(w, http.StatusConflict, "send the photo turn first")
 			return
 		}
+		if req.Type == "idea_selection" && (st.Phase != session.PhasePreview || st.Direction == nil) {
+			writeError(w, http.StatusConflict, "no style preview is waiting for a selection")
+			return
+		}
 
 		applyTurnContext(st, req)
 		if input.Kind == "button" {
@@ -192,8 +196,13 @@ func turnInput(req ChatRequest) (agent.TurnInput, error) {
 			return agent.TurnInput{}, fmt.Errorf("missing field: text")
 		}
 		return agent.TurnInput{Kind: "text", Text: req.Text}, nil
+	case "idea_selection":
+		if len(req.SelectedIdeas) == 0 && strings.TrimSpace(req.Text) == "" {
+			return agent.TurnInput{}, fmt.Errorf("idea_selection needs selected_ideas or text")
+		}
+		return agent.TurnInput{Kind: "selection", Selected: req.SelectedIdeas, Feedback: req.Text}, nil
 	default:
-		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response or text")
+		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response, text or idea_selection")
 	}
 }
 
@@ -267,6 +276,7 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 		cur.Transcript = st.Transcript
 		cur.Products = st.Products
 		cur.Stores = st.Stores
+		cur.Direction = st.Direction
 		cur.Recommendation = st.Recommendation
 		if newLooks {
 			cur.Looks = st.Looks
@@ -294,6 +304,9 @@ func buildChatResponse(st *session.State, message, inputMode string, options []s
 	}
 	for _, o := range options {
 		resp.Options = append(resp.Options, ChatOption{ID: o.ID, Label: o.Label})
+	}
+	if inputMode == "preview" {
+		resp.Direction = st.Direction
 	}
 	if !isFinal || st.Recommendation == nil {
 		return resp

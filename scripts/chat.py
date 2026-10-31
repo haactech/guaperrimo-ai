@@ -59,7 +59,35 @@ def show_turn(resp):
         print(f"   {i}. {o['label']}  ({o['id']})")
     if resp.get("is_final"):
         show_final(resp)
+    if resp.get("input_mode") == "preview":
+        show_direction(resp.get("direction") or {})
     return opts
+
+
+def show_direction(d):
+    brief = d.get("brief") or {}
+    print("\n--- TU DIRECCIÓN DE ESTILO ---")
+    print(brief.get("summary", ""))
+    if brief.get("color_season"):
+        print("estación:", brief["color_season"])
+    print("paleta:", ", ".join(f"{c['name']} {c.get('hex', '')}" for c in brief.get("palette") or []))
+    if brief.get("avoid"):
+        print("evitar:", ", ".join(f"{c['name']} ({c.get('why', '')})" for c in brief["avoid"]))
+    if brief.get("silhouette"):
+        print("silueta:", brief["silhouette"])
+    print("\n--- IDEAS (elige las que te llamen la atención) ---")
+    for n, i in enumerate(d.get("ideas") or [], 1):
+        colors = ", ".join(f"{c['name']} {c.get('hex', '')}" for c in i.get("colors") or [])
+        print(f"\n{n}. [{i['slot']}] {i['garment']} · {colors} · {', '.join(i.get('textures') or [])} · {i.get('fit', '')}")
+        print(f"   por qué: {i.get('why', '')}")
+        if i.get("price_max_mxn"):
+            print(f"   rango: ${i.get('price_min_mxn', 0):.0f}-{i['price_max_mxn']:.0f} MXN")
+        ref = i.get("reference")
+        if ref:
+            print(f"   referencia: {ref['title']} · ${ref['price']:.0f} {ref['currency']} · {ref['store']}")
+            print(f"   foto: {ref.get('thumbnail', '')}")
+        else:
+            print("   (sin foto de referencia)")
 
 
 def show_final(resp):
@@ -114,17 +142,26 @@ def main():
     if code != 200:
         sys.exit(f"turno de foto falló ({code}): {resp}")
     opts = show_turn(resp)
+    ideas = (resp.get("direction") or {}).get("ideas") or []
+    preview = resp.get("input_mode") == "preview"
 
     while True:
         try:
-            answer = input("\nTÚ (número de botón o texto, vacío para salir): ").strip()
+            prompt = "números de ideas separados por coma, y opcional '| comentario'" if preview else "número de botón o texto"
+            answer = input(f"\nTÚ ({prompt}, vacío para salir): ").strip()
         except EOFError:
             answer = ""
         if not answer:
             print("\nfin. Recupera la recomendación con:")
             print(f"  curl -s {args.base}/session/{session}/recommendation")
             return
-        if answer.isdigit() and opts and 1 <= int(answer) <= len(opts):
+        if preview:
+            picks, _, comment = answer.partition("|")
+            nums = [int(x) for x in picks.replace(" ", "").split(",") if x.isdigit()]
+            payload = {"type": "idea_selection", "selected_ideas": [ideas[n - 1]["id"] for n in nums if 1 <= n <= len(ideas)]}
+            if comment.strip():
+                payload["text"] = comment.strip()
+        elif answer.isdigit() and opts and 1 <= int(answer) <= len(opts):
             payload = {"type": "button_response", "option_id": opts[int(answer) - 1]["id"]}
         else:
             payload = {"type": "voice_response", "transcript": answer}
@@ -134,6 +171,8 @@ def main():
             print(f"error {code}: {resp}")
             continue
         opts = show_turn(resp)
+        ideas = (resp.get("direction") or {}).get("ideas") or []
+        preview = resp.get("input_mode") == "preview"
 
 
 if __name__ == "__main__":

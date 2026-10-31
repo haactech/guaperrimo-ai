@@ -72,6 +72,7 @@ type Config struct {
 	AgentMaxSteps     int
 	AgentMaxQuestions int
 	AgentMaxSearches  int
+	AgentPreview      bool // propose a style direction and wait for the user's pick before searching
 	AgentTurnTimeout  time.Duration
 }
 
@@ -133,6 +134,7 @@ func Load() *Config {
 		AgentMaxSteps:     getEnvInt("AGENT_MAX_STEPS", 12),
 		AgentMaxQuestions: getEnvInt("AGENT_MAX_QUESTIONS", 6),
 		AgentMaxSearches:  getEnvInt("AGENT_MAX_SEARCHES", 8),
+		AgentPreview:      getEnv("AGENT_PREVIEW", "false") == "true",
 		AgentTurnTimeout:  parseDuration(getEnv("AGENT_TURN_TIMEOUT", "150s"), 150*time.Second),
 	}
 }

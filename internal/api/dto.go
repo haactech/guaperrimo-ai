@@ -1,6 +1,9 @@
 package api
 
-import "stylerag/internal/shopping"
+import (
+	"stylerag/internal/session"
+	"stylerag/internal/shopping"
+)
 
 // LocationDTO is the device location the app may send with any chat turn.
 type LocationDTO struct {
@@ -11,11 +14,12 @@ type LocationDTO struct {
 
 // ChatRequest is the input for POST /session/{id}/chat.
 type ChatRequest struct {
-	Type          string       `json:"type"`                     // image | button_response | voice_response | text
+	Type          string       `json:"type"`                     // image | button_response | voice_response | text | idea_selection
 	ImageURL      string       `json:"image_url,omitempty"`      // informational; the photo is read from storage
 	OptionID      string       `json:"option_id,omitempty"`      // type=button_response
 	Transcript    string       `json:"transcript,omitempty"`     // type=voice_response
-	Text          string       `json:"text,omitempty"`           // type=text
+	Text          string       `json:"text,omitempty"`           // type=text, or the optional comment of idea_selection
+	SelectedIdeas []string     `json:"selected_ideas,omitempty"` // type=idea_selection; may be empty if text says what he wants instead
 	Location      *LocationDTO `json:"location,omitempty"`       // optional, any turn
 	RadiusM       int          `json:"radius_m,omitempty"`       // optional, any turn
 	AllowShipping *bool        `json:"allow_shipping,omitempty"` // optional, any turn
@@ -64,6 +68,9 @@ type ChatResponse struct {
 	TotalMXN        float64                  `json:"total_mxn,omitempty"`
 	LooksGenerating bool                     `json:"looks_generating,omitempty"`
 	MatrixAvailable bool                     `json:"matrix_available,omitempty"` // GET /session/{id}/matrix has rows
+	// Direction is the style preview (input_mode "preview"): brief, palette
+	// and garment ideas with a reference photo, for the user to pick from.
+	Direction *session.Direction `json:"direction,omitempty"`
 }
 
 // --- Try-on ---

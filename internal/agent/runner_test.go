@@ -95,7 +95,7 @@ func TestFirstTurnRecordsProfileAndAsks(t *testing.T) {
 	if sys.Role != llm.RoleSystem || !strings.Contains(sys.Content, "Preguntas hechas: 0") || !strings.Contains(sys.Content, "outfit sencillo") {
 		t.Errorf("system prompt missing context: %s", sys.Content[:200])
 	}
-	if model.calls[0].ToolChoice != llm.ToolChoiceRequired || len(model.calls[0].Tools) != 6 {
+	if model.calls[0].ToolChoice != llm.ToolChoiceRequired || len(model.calls[0].Tools) != 7 {
 		t.Errorf("tools not offered: choice=%s n=%d", model.calls[0].ToolChoice, len(model.calls[0].Tools))
 	}
 }
@@ -293,5 +293,27 @@ func TestSearchRefusedNearDeadline(t *testing.T) {
 	}
 	if msg := toolMessage(st, "s1"); !strings.Contains(msg, "no queda tiempo") {
 		t.Fatalf("search near the deadline should be refused, got %s", msg)
+	}
+}
+
+func TestFinishDropsDuplicateListings(t *testing.T) {
+	st := newState()
+	shirt := shopping.Product{Title: "Camisa resort lino", Store: "H&M", Price: 479, Currency: "MXN", Thumbnail: "x"}
+	a, b, c := shirt, shirt, shirt
+	a.ID, b.ID = "p_a", "p_b"
+	c.ID, c.Title = "p_c", "Camisa oxford"
+	st.AddProducts([]shopping.Product{a, b, c})
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("f1", toolFinish, map[string]any{
+			"summary": "Listo.", "priority_actions": []map[string]any{},
+			"shopping_list": []map[string]any{{"slot": "upper_body", "description": "Camisa", "product_ids": []string{"p_a", "p_b", "p_c"}}},
+		})),
+	}}
+	r := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 5, 4)
+	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "text", Text: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(st.Recommendation.ShoppingList[0].ProductIDs, ","); got != "p_a,p_c" {
+		t.Fatalf("product ids = %s, want p_a,p_c", got)
 	}
 }
