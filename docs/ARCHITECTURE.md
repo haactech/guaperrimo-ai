@@ -137,3 +137,19 @@ le gustó con la explicación y las tiendas.
 - `tryon.SlotRouter` manda cada prenda al proveedor de su slot: FASHN para la cuadrícula (camisa y saco) y, si `TRYON_LOWER_PROVIDER=google_vertex`, Vertex solo para el pantalón. Cada proveedor tiene su propio `BudgetedVTON` (pantalón: 1 por sesión y 3 por día, unos 3.2 USD diarios como máximo).
 - El pantalón va al final de la cadena, sobre la imagen de la cuadrícula que ya está en caché, así que un look completo cuesta una imagen de Vertex y no tres.
 - `POST /matrix/complete` lo pide; `GET /matrix` lo devuelve en `complete_renders`, con las opciones en `bottoms`.
+
+## Gemini como proveedor de try-on (2026-10-31)
+
+Comparación con la foto del fundador (cortada a medio muslo) y, en la segunda ronda, 9 fotos reales de Google Shopping: una de espaldas, un chino en baja resolución puesto en un modelo con otra playera, rayas finas, cuadros, una playera con logo en la espalda y un suéter tejido. Todo en una sola llamada con el look completo.
+
+| Modelo | USD por imagen | Tiempo | Correctas |
+|---|---|---|---|
+| `gemini-3-pro-image` | 0.134 | 15–23 s | 8 de 8 |
+| `gemini-3.1-flash-lite-image` | 0.034 | 4–17 s | 10 de 17 |
+| `gemini-3.1-flash-image` (Nano Banana 2) | 0.067 | 8–13 s | inconsistente: inventó cuadros y olvidó la chamarra |
+
+- Gemini cambia el pantalón aunque las piernas salgan cortadas, hace las 3 prendas en una llamada y conserva cara, pelo, tatuaje, pose y fondo.
+- Fallas de Flash Lite: manga corta en productos de manga larga, logo de la espalda puesto al frente (las dos se corrigieron en el prompt), tatuaje que se transparenta en la manga del suéter (no se corrigió) y un tatuaje inventado.
+- `imageConfig.aspectRatio` se calcula de la foto de la persona; sin él Pro cambiaba el encuadre a 2:3.
+- La llave de AI Studio necesita nivel de pago: el nivel gratuito tiene cuota 0 para modelos de imagen. `gemini-2.5-flash-image` se apaga el 2027-03-15.
+- Decisión: Pro por defecto; Vertex queda como opción premium. FASHN se veía raro en la opinión del fundador.

@@ -185,6 +185,11 @@ func buildVTON(ctx context.Context, cfg *config.Config, name string) (tryon.VTON
 			return nil, "fashn selected but FASHN_API_KEY is not set"
 		}
 		return &tryon.FashnVTON{APIKey: cfg.FashnAPIKey, Model: cfg.FashnModel, Mode: cfg.FashnMode, HTTPClient: &http.Client{Timeout: 30 * time.Second}}, ""
+	case "gemini":
+		if cfg.GeminiAPIKey == "" {
+			return nil, "gemini selected but GEMINI_API_KEY is not set"
+		}
+		return &tryon.GeminiVTON{APIKey: cfg.GeminiAPIKey, Model: cfg.GeminiImageModel, HTTPClient: &http.Client{Timeout: cfg.VTONTimeout}}, ""
 	case "google_vertex", "":
 		if cfg.GCPProjectID == "" {
 			return nil, "GCP_PROJECT_ID not set"

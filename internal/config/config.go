@@ -60,13 +60,17 @@ type Config struct {
 	TryOnAutoLooks        bool
 	// Pants for the complete look; empty disables it. Own budget, because
 	// Vertex costs about 1.07 USD per image.
-	TryOnLowerProvider      string // "" | google_vertex | fashn
+	TryOnLowerProvider      string // "" | google_vertex | fashn | gemini
 	TryOnLowerMaxPerSession int
 	TryOnLowerMaxPerDay     int
-	RenderConcurrency       int
-	PrefetchConcurrency     int
-	MatrixMaxPerSlot        int
-	ResolveProductDetails   bool
+
+	// Gemini image editing ("Nano Banana") as a try-on provider
+	GeminiAPIKey          string
+	GeminiImageModel      string
+	RenderConcurrency     int
+	PrefetchConcurrency   int
+	MatrixMaxPerSlot      int
+	ResolveProductDetails bool
 
 	// Agent
 	AgentMaxSteps     int
@@ -126,6 +130,8 @@ func Load() *Config {
 		TryOnLowerProvider:      getEnv("TRYON_LOWER_PROVIDER", ""),
 		TryOnLowerMaxPerSession: getEnvInt("TRYON_LOWER_MAX_PER_SESSION", 1),
 		TryOnLowerMaxPerDay:     getEnvInt("TRYON_LOWER_MAX_PER_DAY", 3),
+		GeminiAPIKey:            getEnv("GEMINI_API_KEY", ""),
+		GeminiImageModel:        getEnv("GEMINI_IMAGE_MODEL", "gemini-3-pro-image"),
 		RenderConcurrency:       getEnvInt("RENDER_CONCURRENCY", 3),
 		PrefetchConcurrency:     getEnvInt("RENDER_PREFETCH_CONCURRENCY", 2),
 		MatrixMaxPerSlot:        getEnvInt("MATRIX_MAX_PER_SLOT", 3),
