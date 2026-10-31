@@ -43,6 +43,7 @@ func NewRouter(d Deps) http.Handler {
 	}
 	mux.HandleFunc("GET /session/{id}/matrix", matrixHandler(d.Matrix))
 	mux.HandleFunc("POST /session/{id}/matrix/render", renderHandler(d.Matrix))
+	mux.HandleFunc("POST /session/{id}/matrix/complete", completeHandler(d.Matrix))
 	mux.HandleFunc("GET /session/{id}/saved-looks", savedLooksHandler(d.Store))
 	mux.HandleFunc("POST /session/{id}/saved-looks", saveLookHandler(d.Matrix))
 

@@ -152,37 +152,58 @@ de producto.
   "base_image_url": "https://…/welcome_….jpg",
   "slots": [
     {"slot": "upper_body", "label": "Arriba", "options": [{ …Product, "why": "alarga el torso", "priority": 1 }]},
-    {"slot": "outerwear",  "label": "Encima", "options": [ … ]},
-    {"slot": "lower_body", "label": "Abajo", "options": [ … ]}
+    {"slot": "outerwear",  "label": "Encima", "options": [ … ]}
   ],
-  "default": {"upper_body": "p_…", "outerwear": "p_…", "lower_body": "p_…"},
-  "renders": [{"key": "p_a|p_b|p_c", "selection": {…}, "status": "ready", "image_url": "https://…", "generation_time_ms": 21000}],
+  "default": {"upper_body": "p_…", "outerwear": "p_…"},
+  "renders": [{"key": "p_a|p_b", "selection": {…}, "status": "ready", "image_url": "https://…", "generation_time_ms": 10000}],
+  "bottoms": {"slot": "lower_body", "label": "Abajo", "options": [ … ]},
+  "complete_renders": [{"key": "p_a|p_b|p_c", "selection": {…, "lower_body": "p_c"}, "status": "ready", "image_url": "https://…"}],
   "saved_looks": [SavedLook]
 }
 ```
 
-Las filas van en orden de capas: `upper_body`, `outerwear`, `lower_body`
-(el calzado no se renderiza: la foto suele ser de la cintura hacia arriba). `renders` solo lista combinaciones completas; el servidor cachea
-también los prefijos, por eso cambiar una fila suele costar una sola imagen.
-Al terminar la recomendación se pre-generan la combinación por defecto y todas
-las que están a un swipe de distancia.
+Las filas van en orden de capas: `upper_body` y luego `outerwear`. El calzado
+no se renderiza, y el pantalón tampoco en la cuadrícula: solo en el look
+completo (abajo). `renders` lista solo combinaciones de la cuadrícula; el
+servidor cachea también los prefijos, por eso cambiar una fila suele costar una
+sola imagen. No se pre-genera nada: cada imagen se cobra.
+
+`bottoms` y `complete_renders` aparecen solo cuando el look completo está
+activo (`TRYON_LOWER_PROVIDER`) y la recomendación trae pantalones con foto.
 
 ### `POST /session/{id}/matrix/render`
 
 ```json
-{"selection": {"upper_body": "p_…", "outerwear": "p_…", "lower_body": "p_…"}}
+{"selection": {"upper_body": "p_…", "outerwear": "p_…"}}
 ```
 
 Las filas que falten toman el valor por defecto. Respuestas:
 
 - `200` con `status: "ready"` e `image_url` si ya existe.
-- `202` con `status: "pending" | "generating"` si se está generando. Al pedirla,
-  el servidor también encola las combinaciones vecinas. La app repite el POST
-  o consulta `GET /matrix` cada 2 o 3 segundos y muestra shimmer mientras tanto.
+- `202` con `status: "pending" | "generating"` si se está generando. La app
+  consulta `GET /matrix` cada 2 o 3 segundos y muestra shimmer mientras tanto.
+  Repetir el POST sobre una combinación fallida la vuelve a intentar.
 - `400` selección inválida, `404` sin cuadrícula, `409` sin foto, `503` try-on apagado.
 
-Una imagen tarda entre 15 y 45 s con Vertex. Las combinaciones ya calculadas
-regresan al instante.
+Una imagen tarda unos 10 s con FASHN. Las combinaciones ya calculadas regresan
+al instante.
+
+### `POST /session/{id}/matrix/complete`
+
+El look completo: la combinación de la cuadrícula con el pantalón encima,
+renderizado por el proveedor de `TRYON_LOWER_PROVIDER` (Vertex, que sí cambia
+el pantalón en fotos de medio muslo). Reutiliza la imagen de la cuadrícula ya
+cacheada, así que cuesta una sola imagen de ese proveedor.
+
+```json
+{"selection": {"upper_body": "p_…", "outerwear": "p_…"}, "lower_body": "p_…"}
+```
+
+`lower_body` es opcional (por defecto la primera opción de `bottoms`). Mismas
+respuestas que `/matrix/render`; el resultado aparece en `complete_renders`.
+Tiene su propio tope (`TRYON_LOWER_MAX_PER_SESSION`, `TRYON_LOWER_MAX_PER_DAY`):
+al pasarlo, el render queda `failed` con un `error` que dice "límite…". `503`
+si el look completo no está activo.
 
 ### `GET /session/{id}/saved-looks` y `POST /session/{id}/saved-looks`
 

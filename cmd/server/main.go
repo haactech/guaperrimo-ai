@@ -114,10 +114,22 @@ func main() {
 
 	// Virtual try-on is optional: it needs a GCP project and working Google credentials.
 	var tryonDeps *api.TryOnDeps
-	if provider, reason := buildVTON(ctx, cfg); provider == nil {
+	if provider, reason := buildVTON(ctx, cfg, cfg.VTONProvider); provider == nil {
 		slog.WarnContext(ctx, "vton disabled", "reason", reason)
 	} else {
-		vton := tryon.NewBudgetedVTON(provider, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
+		var vton tryon.VTONProvider = tryon.NewBudgetedVTON(provider, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
+		completeLooks := false
+		if cfg.TryOnLowerProvider != "" {
+			if lower, reason := buildVTON(ctx, cfg, cfg.TryOnLowerProvider); lower == nil {
+				slog.WarnContext(ctx, "complete looks disabled", "reason", reason)
+			} else {
+				vton = &tryon.SlotRouter{Default: vton, BySlot: map[string]tryon.VTONProvider{
+					session.BottomSlot: tryon.NewBudgetedVTON(lower, cfg.TryOnLowerMaxPerSession, cfg.TryOnLowerMaxPerDay),
+				}}
+				completeLooks = true
+				slog.InfoContext(ctx, "complete looks enabled", "lower_body_provider", lower.Name(), "max_per_session", cfg.TryOnLowerMaxPerSession, "max_per_day", cfg.TryOnLowerMaxPerDay)
+			}
+		}
 		httpClient := &http.Client{Timeout: 15 * time.Second}
 		var details shopping.DetailResolver
 		if dr, ok := shop.(shopping.DetailResolver); ok && cfg.ResolveProductDetails {
@@ -129,6 +141,7 @@ func main() {
 		chatDeps.AutoLooks = cfg.TryOnAutoLooks
 		chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
 		matrixDeps.Renderer = renderer
+		matrixDeps.CompleteLooks = completeLooks
 		slog.InfoContext(ctx, "vton enabled", "provider", provider.Name(), "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "product_details", details != nil)
 	}
 
@@ -162,13 +175,13 @@ func main() {
 	}
 }
 
-// buildVTON returns the configured try-on provider, or nil and the reason it
-// is disabled.
-func buildVTON(ctx context.Context, cfg *config.Config) (tryon.VTONProvider, string) {
-	switch cfg.VTONProvider {
+// buildVTON returns the named try-on provider, or nil and the reason it is
+// disabled.
+func buildVTON(ctx context.Context, cfg *config.Config, name string) (tryon.VTONProvider, string) {
+	switch name {
 	case "fashn":
 		if cfg.FashnAPIKey == "" {
-			return nil, "VTON_PROVIDER=fashn but FASHN_API_KEY is not set"
+			return nil, "fashn selected but FASHN_API_KEY is not set"
 		}
 		return &tryon.FashnVTON{APIKey: cfg.FashnAPIKey, Model: cfg.FashnModel, Mode: cfg.FashnMode, HTTPClient: &http.Client{Timeout: 30 * time.Second}}, ""
 	case "google_vertex", "":
@@ -183,6 +196,6 @@ func buildVTON(ctx context.Context, cfg *config.Config) (tryon.VTONProvider, str
 		}
 		return &tryon.GoogleVertexVTON{ProjectID: cfg.GCPProjectID, Region: cfg.GCPRegion, BaseSteps: cfg.VTONBaseSteps, HTTPClient: &http.Client{Timeout: cfg.VTONTimeout}}, ""
 	default:
-		return nil, "unknown VTON_PROVIDER " + cfg.VTONProvider
+		return nil, "unknown try-on provider " + name
 	}
 }

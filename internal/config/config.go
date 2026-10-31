@@ -58,10 +58,15 @@ type Config struct {
 	TryOnMaxPerSession    int
 	TryOnMaxPerDay        int
 	TryOnAutoLooks        bool
-	RenderConcurrency     int
-	PrefetchConcurrency   int
-	MatrixMaxPerSlot      int
-	ResolveProductDetails bool
+	// Pants for the complete look; empty disables it. Own budget, because
+	// Vertex costs about 1.07 USD per image.
+	TryOnLowerProvider      string // "" | google_vertex | fashn
+	TryOnLowerMaxPerSession int
+	TryOnLowerMaxPerDay     int
+	RenderConcurrency       int
+	PrefetchConcurrency     int
+	MatrixMaxPerSlot        int
+	ResolveProductDetails   bool
 
 	// Agent
 	AgentMaxSteps     int
@@ -104,23 +109,26 @@ func Load() *Config {
 		R2BucketName:      getEnv("R2_BUCKET_NAME", ""),
 		R2PublicURL:       strings.TrimRight(getEnv("R2_PUBLIC_URL", ""), "/"),
 
-		GCPProjectID:          getEnv("GCP_PROJECT_ID", ""),
-		GCPSAKeyJSON:          getEnv("GCP_SA_KEY_JSON", ""),
-		GCPRegion:             getEnv("GCP_REGION", "us-central1"),
-		VTONProvider:          getEnv("VTON_PROVIDER", "google_vertex"),
-		FashnAPIKey:           getEnv("FASHN_API_KEY", ""),
-		FashnModel:            getEnv("FASHN_MODEL", "tryon-v1.6"),
-		FashnMode:             getEnv("FASHN_MODE", "balanced"),
-		VTONBaseSteps:         getEnvInt("VTON_BASE_STEPS", 20),
-		VTONTimeout:           parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
-		LookGenerationTimeout: parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
-		TryOnMaxPerSession:    getEnvInt("TRYON_MAX_PER_SESSION", 4),
-		TryOnMaxPerDay:        getEnvInt("TRYON_MAX_PER_DAY", 10),
-		TryOnAutoLooks:        getEnv("TRYON_AUTO_LOOKS", "false") == "true",
-		RenderConcurrency:     getEnvInt("RENDER_CONCURRENCY", 3),
-		PrefetchConcurrency:   getEnvInt("RENDER_PREFETCH_CONCURRENCY", 2),
-		MatrixMaxPerSlot:      getEnvInt("MATRIX_MAX_PER_SLOT", 3),
-		ResolveProductDetails: getEnv("RESOLVE_PRODUCT_DETAILS", "true") != "false",
+		GCPProjectID:            getEnv("GCP_PROJECT_ID", ""),
+		GCPSAKeyJSON:            getEnv("GCP_SA_KEY_JSON", ""),
+		GCPRegion:               getEnv("GCP_REGION", "us-central1"),
+		VTONProvider:            getEnv("VTON_PROVIDER", "google_vertex"),
+		FashnAPIKey:             getEnv("FASHN_API_KEY", ""),
+		FashnModel:              getEnv("FASHN_MODEL", "tryon-v1.6"),
+		FashnMode:               getEnv("FASHN_MODE", "balanced"),
+		VTONBaseSteps:           getEnvInt("VTON_BASE_STEPS", 20),
+		VTONTimeout:             parseDuration(getEnv("VTON_TIMEOUT", "60s"), 60*time.Second),
+		LookGenerationTimeout:   parseDuration(getEnv("LOOK_GENERATION_TIMEOUT", "180s"), 180*time.Second),
+		TryOnMaxPerSession:      getEnvInt("TRYON_MAX_PER_SESSION", 4),
+		TryOnMaxPerDay:          getEnvInt("TRYON_MAX_PER_DAY", 10),
+		TryOnAutoLooks:          getEnv("TRYON_AUTO_LOOKS", "false") == "true",
+		TryOnLowerProvider:      getEnv("TRYON_LOWER_PROVIDER", ""),
+		TryOnLowerMaxPerSession: getEnvInt("TRYON_LOWER_MAX_PER_SESSION", 1),
+		TryOnLowerMaxPerDay:     getEnvInt("TRYON_LOWER_MAX_PER_DAY", 3),
+		RenderConcurrency:       getEnvInt("RENDER_CONCURRENCY", 3),
+		PrefetchConcurrency:     getEnvInt("RENDER_PREFETCH_CONCURRENCY", 2),
+		MatrixMaxPerSlot:        getEnvInt("MATRIX_MAX_PER_SLOT", 3),
+		ResolveProductDetails:   getEnv("RESOLVE_PRODUCT_DETAILS", "true") != "false",
 
 		AgentMaxSteps:     getEnvInt("AGENT_MAX_STEPS", 12),
 		AgentMaxQuestions: getEnvInt("AGENT_MAX_QUESTIONS", 6),

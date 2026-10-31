@@ -16,6 +16,9 @@ import (
 type MatrixDeps struct {
 	Store    session.Store
 	Renderer *tryon.Renderer // nil = try-on unavailable; the grid still works without images
+	// CompleteLooks enables POST /matrix/complete: the grid combination plus
+	// pants, rendered by the provider configured for lower_body.
+	CompleteLooks bool
 }
 
 // --- DTOs ---
@@ -53,11 +56,22 @@ type MatrixResponse struct {
 	Default      map[string]string    `json:"default"`
 	Renders      []RenderResponse     `json:"renders"`
 	SavedLooks   []session.SavedLook  `json:"saved_looks"`
+	// Bottoms is the pants row for the complete look; present only when it
+	// can be rendered.
+	Bottoms         *MatrixSlotResponse `json:"bottoms,omitempty"`
+	CompleteRenders []RenderResponse    `json:"complete_renders"`
 }
 
 // RenderRequest is the input of POST /session/{id}/matrix/render.
 type RenderRequest struct {
 	Selection map[string]string `json:"selection"`
+}
+
+// CompleteRequest is the input of POST /session/{id}/matrix/complete.
+// LowerBody defaults to the first pants option.
+type CompleteRequest struct {
+	Selection map[string]string `json:"selection"`
+	LowerBody string            `json:"lower_body,omitempty"`
 }
 
 // SaveLookRequest is the input of POST /session/{id}/saved-looks.
@@ -78,7 +92,7 @@ func matrixHandler(deps *MatrixDeps) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "no recommendation yet")
 			return
 		}
-		writeJSON(w, http.StatusOK, buildMatrixResponse(st, deps.Renderer != nil))
+		writeJSON(w, http.StatusOK, buildMatrixResponse(st, deps.Renderer != nil, deps.CompleteLooks))
 	}
 }
 
@@ -110,34 +124,78 @@ func renderHandler(deps *MatrixDeps) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
-		pieces := st.Matrix.Combo(sel)
-		key := session.ComboKey(pieces)
+		startRender(w, r, deps, st, st.Matrix.Combo(sel))
+	}
+}
 
-		if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusReady {
-			writeJSON(w, http.StatusOK, renderResponse(st.Matrix, rd))
+// completeHandler renders the grid combination plus pants. The grid part is
+// usually cached already, so this costs one image from the lower_body
+// provider, which has its own (small) budget.
+func completeHandler(deps *MatrixDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		st, ok := loadSession(w, r, deps.Store)
+		if !ok {
 			return
 		}
-
-		// Mark as pending so polls see it, then render this one first and
-		// its one-swipe neighbours speculatively.
-		_ = deps.Store.Update(r.Context(), st.ID, func(cur *session.State) error {
-			if cur.Renders == nil {
-				cur.Renders = map[string]session.Render{}
-			}
-			if existing, ok := cur.Renders[key]; !ok || existing.Status == session.LookStatusFailed {
-				cur.Renders[key] = session.Render{Key: key, Pieces: pieces, Status: session.LookStatusPending, UpdatedAt: time.Now()}
-			}
-			return nil
-		})
-		// Only the requested combination: no speculative neighbours (billed per image).
-		deps.Renderer.Request(st.ID, pieces, false)
-
-		status := session.LookStatusPending
-		if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusGenerating {
-			status = rd.Status
+		if st.Matrix == nil {
+			writeError(w, http.StatusNotFound, "no outfit grid for this session")
+			return
 		}
-		writeJSON(w, http.StatusAccepted, RenderResponse{Key: key, Selection: sel, Status: string(status)})
+		if deps.Renderer == nil || !deps.CompleteLooks {
+			writeError(w, http.StatusServiceUnavailable, "complete looks are not enabled")
+			return
+		}
+		if st.ImageKey == "" {
+			writeError(w, http.StatusConflict, "session has no photo")
+			return
+		}
+		var req CompleteRequest
+		if err := decodeJSON(w, r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		sel, msg := st.Matrix.Validate(session.Selection(req.Selection))
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		pieces, msg := st.Matrix.CompleteCombo(sel, req.LowerBody)
+		if msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		startRender(w, r, deps, st, pieces)
 	}
+}
+
+// startRender answers 200 with a cached image or marks the combination
+// pending, renders it in the background and answers 202; clients poll
+// GET /matrix. Only the requested combination is rendered: no speculative
+// neighbours, because every image is billed.
+func startRender(w http.ResponseWriter, r *http.Request, deps *MatrixDeps, st *session.State, pieces []session.ComboPiece) {
+	key := session.ComboKey(pieces)
+	if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusReady {
+		writeJSON(w, http.StatusOK, renderResponse(st.Matrix, rd))
+		return
+	}
+	_ = deps.Store.Update(r.Context(), st.ID, func(cur *session.State) error {
+		if cur.Renders == nil {
+			cur.Renders = map[string]session.Render{}
+		}
+		if existing, ok := cur.Renders[key]; !ok || existing.Status == session.LookStatusFailed {
+			cur.Renders[key] = session.Render{Key: key, Pieces: pieces, Status: session.LookStatusPending, UpdatedAt: time.Now()}
+		}
+		return nil
+	})
+	deps.Renderer.Request(st.ID, pieces, false)
+
+	status := session.LookStatusPending
+	if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusGenerating {
+		status = rd.Status
+	}
+	pending := renderResponse(st.Matrix, session.Render{Key: key, Pieces: pieces})
+	pending.Status = string(status)
+	writeJSON(w, http.StatusAccepted, pending)
 }
 
 func saveLookHandler(deps *MatrixDeps) http.HandlerFunc {
@@ -208,7 +266,7 @@ func loadSession(w http.ResponseWriter, r *http.Request, store session.Store) (*
 	return st, true
 }
 
-func buildMatrixResponse(st *session.State, tryonEnabled bool) MatrixResponse {
+func buildMatrixResponse(st *session.State, tryonEnabled, completeLooks bool) MatrixResponse {
 	resp := MatrixResponse{
 		SessionID:    st.ID,
 		Available:    tryonEnabled && st.Matrix != nil && st.ImageKey != "",
@@ -217,6 +275,8 @@ func buildMatrixResponse(st *session.State, tryonEnabled bool) MatrixResponse {
 		Default:      map[string]string{},
 		Renders:      []RenderResponse{},
 		SavedLooks:   st.SavedLooks,
+
+		CompleteRenders: []RenderResponse{},
 	}
 	if resp.SavedLooks == nil {
 		resp.SavedLooks = []session.SavedLook{}
@@ -225,24 +285,35 @@ func buildMatrixResponse(st *session.State, tryonEnabled bool) MatrixResponse {
 		return resp
 	}
 	resp.Default = st.Matrix.Default
-	for _, s := range st.Matrix.Slots {
-		row := MatrixSlotResponse{Slot: s.Slot, Label: s.Label}
-		for _, o := range s.Options {
+	row := func(slot, label string, opts []session.MatrixOption) MatrixSlotResponse {
+		out := MatrixSlotResponse{Slot: slot, Label: label}
+		for _, o := range opts {
 			p, ok := st.Products[o.ProductID]
 			if !ok {
 				continue
 			}
-			row.Options = append(row.Options, MatrixOptionResponse{Product: p, Why: o.Why, Priority: o.Priority})
+			out.Options = append(out.Options, MatrixOptionResponse{Product: p, Why: o.Why, Priority: o.Priority})
 		}
-		resp.Slots = append(resp.Slots, row)
+		return out
 	}
+	for _, s := range st.Matrix.Slots {
+		resp.Slots = append(resp.Slots, row(s.Slot, s.Label, s.Options))
+	}
+	if completeLooks && resp.Available && len(st.Matrix.Bottoms) > 0 {
+		b := row(session.BottomSlot, session.SlotLabels[session.BottomSlot], st.Matrix.Bottoms)
+		resp.Bottoms = &b
+	}
+	n := len(st.Matrix.Slots)
 	for _, rd := range st.Renders {
-		if len(rd.Pieces) != len(st.Matrix.Slots) {
-			continue // prefixes are internal
-		}
-		resp.Renders = append(resp.Renders, renderResponse(st.Matrix, rd))
+		switch {
+		case len(rd.Pieces) == n:
+			resp.Renders = append(resp.Renders, renderResponse(st.Matrix, rd))
+		case len(rd.Pieces) == n+1 && rd.Pieces[n].Slot == session.BottomSlot:
+			resp.CompleteRenders = append(resp.CompleteRenders, renderResponse(st.Matrix, rd))
+		} // shorter prefixes are internal
 	}
 	sort.Slice(resp.Renders, func(i, j int) bool { return resp.Renders[i].Key < resp.Renders[j].Key })
+	sort.Slice(resp.CompleteRenders, func(i, j int) bool { return resp.CompleteRenders[i].Key < resp.CompleteRenders[j].Key })
 	return resp
 }
 

@@ -10,9 +10,14 @@ import (
 
 // SlotOrder is the chain order for virtual try-on: inner layers first so the
 // next garment renders on top of the previous result.
-// Pants are not rendered: on waist-up photos the try-on cannot replace them
-// (tested with FASHN and Vertex, Oct 2026). They stay in the shopping list.
+// Pants are not a swipe row: FASHN leaves them unchanged when the legs are
+// cut off (Oct 2026). Vertex does replace them, but costs about 14 times more
+// per image, so pants are rendered once, last, as the "complete look" on top
+// of the chosen grid combination (see Matrix.Bottoms and CompleteCombo).
 var SlotOrder = []string{"upper_body", "outerwear"}
+
+// BottomSlot is the slot rendered only in the complete look.
+const BottomSlot = "lower_body"
 
 // SlotLabels are the Spanish row titles shown in the app.
 var SlotLabels = map[string]string{
@@ -48,7 +53,8 @@ type MatrixSlot struct {
 // Matrix is the mix-and-match grid built from the recommendation.
 type Matrix struct {
 	Slots     []MatrixSlot      `json:"slots"`
-	Default   map[string]string `json:"default"` // slot -> product id
+	Default   map[string]string `json:"default"`           // slot -> product id
+	Bottoms   []MatrixOption    `json:"bottoms,omitempty"` // pants for the complete look
 	CreatedAt time.Time         `json:"created_at"`
 }
 
@@ -99,6 +105,25 @@ func (m *Matrix) Validate(sel Selection) (Selection, string) {
 	return out, ""
 }
 
+// CompleteCombo is the grid combination with the pants appended last, so the
+// cached grid render is reused and only the pants cost a new image. bottomID
+// defaults to the first option.
+func (m *Matrix) CompleteCombo(sel Selection, bottomID string) ([]ComboPiece, string) {
+	if len(m.Bottoms) == 0 {
+		return nil, "this outfit has no pants to try on"
+	}
+	bottomID = strings.TrimSpace(bottomID)
+	if bottomID == "" {
+		bottomID = m.Bottoms[0].ProductID
+	}
+	for _, o := range m.Bottoms {
+		if o.ProductID == bottomID {
+			return append(m.Combo(sel), ComboPiece{Slot: BottomSlot, ProductID: bottomID}), ""
+		}
+	}
+	return nil, "lower_body is not one of the pants options"
+}
+
 // Neighbors returns every selection that differs from sel in exactly one slot:
 // the combinations one swipe away.
 func (m *Matrix) Neighbors(sel Selection) []Selection {
@@ -147,7 +172,7 @@ func BuildMatrix(st *State, maxPerSlot int) *Matrix {
 	seen := map[string]bool{}
 	order := 0
 	add := func(slot, id, why string, priority int) {
-		if SlotRank(slot) >= len(SlotOrder) || seen[slot+"|"+id] {
+		if (SlotRank(slot) >= len(SlotOrder) && slot != BottomSlot) || seen[slot+"|"+id] {
 			return
 		}
 		p, ok := st.Products[id]
@@ -172,12 +197,8 @@ func BuildMatrix(st *State, maxPerSlot int) *Matrix {
 		}
 	}
 
-	m := &Matrix{Default: map[string]string{}, CreatedAt: time.Now()}
-	for _, slot := range SlotOrder {
+	ranked := func(slot string) []MatrixOption {
 		cands := bySlot[slot]
-		if len(cands) == 0 {
-			continue
-		}
 		sort.SliceStable(cands, func(i, j int) bool {
 			if cands[i].priority != cands[j].priority {
 				return cands[i].priority < cands[j].priority
@@ -187,13 +208,23 @@ func BuildMatrix(st *State, maxPerSlot int) *Matrix {
 		if len(cands) > maxPerSlot {
 			cands = cands[:maxPerSlot]
 		}
-		ms := MatrixSlot{Slot: slot, Label: SlotLabels[slot]}
+		var out []MatrixOption
 		for _, c := range cands {
-			ms.Options = append(ms.Options, c.opt)
+			out = append(out, c.opt)
 		}
-		m.Slots = append(m.Slots, ms)
-		m.Default[slot] = ms.Options[0].ProductID
+		return out
 	}
+
+	m := &Matrix{Default: map[string]string{}, CreatedAt: time.Now()}
+	for _, slot := range SlotOrder {
+		opts := ranked(slot)
+		if len(opts) == 0 {
+			continue
+		}
+		m.Slots = append(m.Slots, MatrixSlot{Slot: slot, Label: SlotLabels[slot], Options: opts})
+		m.Default[slot] = opts[0].ProductID
+	}
+	m.Bottoms = ranked(BottomSlot)
 	if len(m.Slots) == 0 {
 		return nil
 	}

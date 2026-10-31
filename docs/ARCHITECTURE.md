@@ -128,6 +128,12 @@ le gustó con la explicación y las tiendas.
 
 - Proveedor por defecto `VTON_PROVIDER=fashn` (`tryon-v1.6`, modo `balanced`), unas 14 veces más barato que Vertex (0.075 contra 1.07 USD por imagen).
 - Prueba con la foto real del fundador: con fotos de producto claras (camisa de manga larga, con modelo o plana) FASHN da resultados muy creíbles en unos 10 s. Falló con una camisa de manga corta mal fotografiada y con el pantalón.
-- **El pantalón ya no se renderiza.** En fotos de cintura hacia arriba ni FASHN ni Vertex pueden reemplazarlo. La cuadrícula queda en dos filas, arriba y encima; el pantalón sigue en la lista de compras.
+- **El pantalón ya no se renderiza.** FASHN no lo reemplaza en fotos donde las piernas salen cortadas; Vertex sí lo hizo bien con la misma foto, pero cuesta 14 veces más. La cuadrícula queda en dos filas, arriba y encima; el pantalón sigue en la lista de compras.
 - Las imágenes viajan en base64 para que FASHN no guarde URLs de la foto del usuario; FASHN no cobra predicciones fallidas.
 - `cmd/tryontest` compara proveedores encadenando prendas sobre una foto, con `-photo-type` y tope `-max` de llamadas.
+
+## Look completo con dos proveedores (2026-10-12)
+
+- `tryon.SlotRouter` manda cada prenda al proveedor de su slot: FASHN para la cuadrícula (camisa y saco) y, si `TRYON_LOWER_PROVIDER=google_vertex`, Vertex solo para el pantalón. Cada proveedor tiene su propio `BudgetedVTON` (pantalón: 1 por sesión y 3 por día, unos 3.2 USD diarios como máximo).
+- El pantalón va al final de la cadena, sobre la imagen de la cuadrícula que ya está en caché, así que un look completo cuesta una imagen de Vertex y no tres.
+- `POST /matrix/complete` lo pide; `GET /matrix` lo devuelve en `complete_renders`, con las opciones en `bottoms`.

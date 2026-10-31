@@ -70,3 +70,26 @@ func TestBuildMatrixWithoutRecommendation(t *testing.T) {
 		t.Fatal("no recommendation means no matrix")
 	}
 }
+
+func TestCompleteComboAppendsPantsLast(t *testing.T) {
+	m := BuildMatrix(matrixState(), 3)
+	// p1 and p2 have photos, noimg does not; the look's p2 is already listed.
+	if len(m.Bottoms) != 2 || m.Bottoms[0].ProductID != "p1" || m.Bottoms[1].ProductID != "p2" {
+		t.Fatalf("bottoms = %+v", m.Bottoms)
+	}
+	sel, _ := m.Validate(Selection{"upper_body": "s2"})
+
+	combo, msg := m.CompleteCombo(sel, "")
+	if msg != "" || ComboKey(combo) != "s2|z1|p1" || combo[2].Slot != BottomSlot {
+		t.Fatalf("default pants: %v %q", combo, msg)
+	}
+	if combo, msg = m.CompleteCombo(sel, "p2"); msg != "" || ComboKey(combo) != "s2|z1|p2" {
+		t.Fatalf("chosen pants: %v %q", combo, msg)
+	}
+	if _, msg = m.CompleteCombo(sel, "s1"); msg == "" {
+		t.Fatal("a shirt is not a pants option")
+	}
+	if _, msg = (&Matrix{}).CompleteCombo(sel, ""); msg == "" {
+		t.Fatal("no pants means no complete look")
+	}
+}

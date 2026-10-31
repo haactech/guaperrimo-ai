@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,5 +156,119 @@ func TestMatrixWithoutTryOn(t *testing.T) {
 	code, body = postJSON(t, base+"/saved-looks", map[string]any{"selection": map[string]string{}}, nil)
 	if code != 200 || len(body["stores"].([]any)) != 1 {
 		t.Fatalf("saving the default look should work and list the nearby store: %d %v", code, body)
+	}
+}
+
+type slotCounter struct {
+	name string
+	mu   sync.Mutex
+	got  []string
+}
+
+func (c *slotCounter) Name() string { return c.name }
+func (c *slotCounter) Generate(ctx context.Context, req tryon.VTONRequest) (*tryon.VTONResult, error) {
+	c.mu.Lock()
+	c.got = append(c.got, req.Category)
+	c.mu.Unlock()
+	return apiFakeVTON{}.Generate(ctx, req)
+}
+
+func (c *slotCounter) calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.got...)
+}
+
+func TestCompleteLookRendersOnlyPantsWithTheirProvider(t *testing.T) {
+	imgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("garment"))
+	}))
+	t.Cleanup(imgSrv.Close)
+	store, images := finishedSession(t, imgSrv.URL)
+	cheap, pricey := &slotCounter{name: "fashn"}, &slotCounter{name: "google_vertex"}
+	router := &tryon.SlotRouter{Default: cheap, BySlot: map[string]tryon.VTONProvider{
+		session.BottomSlot: tryon.NewBudgetedVTON(pricey, 1, 3),
+	}}
+	deps := &MatrixDeps{Store: store, Renderer: tryon.NewRenderer(store, images, router, nil, imgSrv.Client(), 3, 2, 5*time.Second), CompleteLooks: true}
+	srv := httptest.NewServer(NewRouter(Deps{Images: images, Store: store, Chat: &ChatDeps{Store: store, Images: images}, Matrix: deps}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/session/sess_mx_1"
+
+	_, body := getJSON(t, base+"/matrix")
+	bottoms, ok := body["bottoms"].(map[string]any)
+	if !ok || bottoms["label"] != "Abajo" || len(bottoms["options"].([]any)) != 1 {
+		t.Fatalf("bottoms row: %v", body["bottoms"])
+	}
+
+	waitReady := func(path string, req map[string]any, key string) {
+		t.Helper()
+		for i := 0; i < 100; i++ {
+			code, body := postJSON(t, base+path, req, nil)
+			if code == 200 && body["status"] == "ready" && body["key"] == key {
+				return
+			}
+			if body["status"] == "failed" {
+				t.Fatalf("%s failed: %v", path, body)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("%s never became ready", path)
+	}
+	sel := map[string]any{"selection": map[string]string{"upper_body": "s2"}}
+	waitReady("/matrix/render", sel, "s2|z1")
+	waitReady("/matrix/complete", sel, "s2|z1|p1")
+
+	if got := cheap.calls(); len(got) != 2 || got[0] != "upper_body" || got[1] != "outerwear" {
+		t.Fatalf("grid provider calls = %v, want upper_body, outerwear", got)
+	}
+	if got := pricey.calls(); len(got) != 1 || got[0] != "lower_body" {
+		t.Fatalf("pants provider calls = %v, want one lower_body (grid render reused)", got)
+	}
+
+	_, body = getJSON(t, base+"/matrix")
+	if c := body["complete_renders"].([]any); len(c) != 1 || c[0].(map[string]any)["selection"].(map[string]any)["lower_body"] != "p1" {
+		t.Fatalf("complete_renders: %v", c)
+	}
+	if r := body["renders"].([]any); len(r) != 1 {
+		t.Fatalf("grid renders must not include the complete look: %v", r)
+	}
+
+	// Another top means another pants image: over the session budget of 1.
+	other := map[string]any{"selection": map[string]string{"upper_body": "s1"}}
+	// Poll GET like the app does: a POST would retry the failed render.
+	postJSON(t, base+"/matrix/complete", other, nil)
+	var failed map[string]any
+	for i := 0; i < 100 && failed == nil; i++ {
+		time.Sleep(20 * time.Millisecond)
+		_, body = getJSON(t, base+"/matrix")
+		for _, c := range body["complete_renders"].([]any) {
+			if c := c.(map[string]any); c["key"] == "s1|z1|p1" && c["status"] == "failed" {
+				failed = c
+			}
+		}
+	}
+	if failed == nil || !strings.Contains(failed["error"].(string), "límite") {
+		t.Fatalf("second complete look should hit the pants budget: %v", body["complete_renders"])
+	}
+	if got := pricey.calls(); len(got) != 1 {
+		t.Fatalf("budget must stop the call before the provider, got %v", got)
+	}
+
+	code, _ := postJSON(t, base+"/matrix/complete", map[string]any{"selection": map[string]string{}, "lower_body": "s1"}, nil)
+	if code != 400 {
+		t.Fatalf("a shirt as lower_body should be 400, got %d", code)
+	}
+}
+
+func TestCompleteLookDisabled(t *testing.T) {
+	srv, _ := matrixServer(t, true)
+	base := srv.URL + "/session/sess_mx_1"
+	_, body := getJSON(t, base+"/matrix")
+	if _, ok := body["bottoms"]; ok {
+		t.Fatalf("bottoms must be hidden when complete looks are off: %v", body["bottoms"])
+	}
+	if code, _ := postJSON(t, base+"/matrix/complete", map[string]any{"selection": map[string]string{}}, nil); code != 503 {
+		t.Fatalf("complete without a pants provider should be 503, got %d", code)
 	}
 }
