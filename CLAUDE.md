@@ -30,8 +30,8 @@ iOS ──POST /session/{id}/chat───▶ chat handler
                                     ▼
                                 session.Store (memory or Postgres JSONB)
                                     ▼ (optional, background)
-                                tryon.Renderer ── Vertex try-on, one cached render per garment-chain prefix
-                                    ├─ prewarm: default combination + one-swipe neighbours
+                                tryon.Renderer ── Gemini: whole outfit in one call; FASHN/Vertex: chained, prefix cache
+                                    ├─ per-session and per-day image budgets (no prefetch)
                                     ├─ GET /matrix · POST /matrix/render (mix & match rows)
                                     └─ POST /saved-looks (chosen outfit + why + stores)
 ```
@@ -49,8 +49,10 @@ iOS ──POST /session/{id}/chat───▶ chat handler
 - `internal/session` — JSON state (profile, agent memory, products seen,
   recommendation, looks) with `MemoryStore` and `PostgresStore`.
   `Update` does read-modify-write under a lock so background jobs never clobber a turn.
-- `internal/tryon` — Vertex VTON provider, safe image download, `Renderer` (prefix cache,
-  in-flight dedupe, bounded prefetch) and the look generator built on it.
+- `internal/tryon` — try-on providers (Gemini default, FASHN, Vertex), budgets,
+  `SlotRouter`, safe image download, `Renderer` (one-call outfits or chained
+  prefix cache, in-flight dedupe) and the look generator built on it.
+- `internal/imageutil` — uploaded JPEGs are stored upright without EXIF.
 - `internal/api` — handlers, DTOs, optional `X-API-Key` middleware.
 
 ## Commands
@@ -60,7 +62,7 @@ go build ./...          # build
 go test ./...           # unit tests (no network: fakes + httptest)
 go run ./cmd/server     # run (reads .env)
 docker compose up       # app + postgres
-go run ./cmd/tryontest -person p.jpg -garment g.jpg   # VTON smoke test
+go run ./cmd/tryontest -provider gemini -together -person p.jpg -garment upper_body=g.jpg   # try-on smoke test (billed)
 python3 scripts/chat.py --photo foto.jpg              # interactive terminal client (no iPhone needed)
 LLM_LIVE=1 go test ./internal/llm -run Live -v        # one real tool-calling round trip
 ```
@@ -69,7 +71,8 @@ LLM_LIVE=1 go test ./internal/llm -run Live -v        # one real tool-calling ro
 
 See `.env.example`. Required: an LLM key and the R2 variables. Optional:
 `SERPAPI_KEY` (without it products are fake), `POSTGRES_URL` (without it
-sessions are in memory), `GCP_PROJECT_ID` (enables try-on), `API_KEY`.
+sessions are in memory), `GEMINI_API_KEY` (try-on with the default `VTON_PROVIDER=gemini`; paid AI
+Studio tier), `API_KEY`.
 
 ## Conventions
 

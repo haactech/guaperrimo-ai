@@ -11,6 +11,10 @@ rutas menos `/health` exigen la cabecera `X-API-Key`.
 
 Multipart con campo `image` (JPEG, PNG o WebP, máximo 10 MB).
 
+Los JPEG se guardan derechos y sin metadatos: el servidor aplica la rotación
+EXIF que pone el iPhone a las fotos verticales y borra el EXIF (incluido el
+GPS). Si el JPEG no se puede decodificar, se guarda tal cual.
+
 ```json
 {"url": "https://<r2-public>/sessions/{id}/welcome_1700000000.jpg", "session_id": "{id}"}
 ```
@@ -153,6 +157,11 @@ Misma forma que la respuesta final de `/chat`. `404` si aún no hay recomendaci�
 
 `status` es `none` cuando el try-on está deshabilitado o aún no se lanzó.
 
+Con `VTON_PROVIDER=gemini` cada look es una sola imagen con todas las prendas,
+pantalón incluido, y solo la última pieza trae `tryon_image_url` (igual a
+`final_image_url`). Con proveedores encadenados cada pieza trae la imagen de
+su paso y el pantalón no se renderiza.
+
 ## `POST /session/{id}/tryon`
 
 Solo existe si `GCP_PROJECT_ID` está configurado.
@@ -207,12 +216,15 @@ de producto.
 
 Las filas van en orden de capas: `upper_body` y luego `outerwear`. El calzado
 no se renderiza, y el pantalón tampoco en la cuadrícula: solo en el look
-completo (abajo). `renders` lista solo combinaciones de la cuadrícula; el
-servidor cachea también los prefijos, por eso cambiar una fila suele costar una
-sola imagen. No se pre-genera nada: cada imagen se cobra.
+completo (abajo). `renders` lista solo combinaciones de la cuadrícula. Con
+Gemini cada combinación es una imagen generada desde la foto original; con
+proveedores encadenados el servidor cachea también los prefijos, por eso
+cambiar una fila suele costar una sola imagen. No se pre-genera nada: cada
+imagen se cobra.
 
 `bottoms` y `complete_renders` aparecen solo cuando el look completo está
-activo (`TRYON_LOWER_PROVIDER`) y la recomendación trae pantalones con foto.
+activo (`VTON_PROVIDER=gemini`, o `TRYON_LOWER_PROVIDER` con un proveedor
+encadenado) y la recomendación trae pantalones con foto.
 
 ### `POST /session/{id}/matrix/render`
 
@@ -228,15 +240,19 @@ Las filas que falten toman el valor por defecto. Respuestas:
   Repetir el POST sobre una combinación fallida la vuelve a intentar.
 - `400` selección inválida, `404` sin cuadrícula, `409` sin foto, `503` try-on apagado.
 
-Una imagen tarda unos 10 s con FASHN. Las combinaciones ya calculadas regresan
-al instante.
+Una imagen tarda 15–23 s con Gemini Pro (unos 10 s por prenda con FASHN). Las
+combinaciones ya calculadas regresan al instante.
 
 ### `POST /session/{id}/matrix/complete`
 
-El look completo: la combinación de la cuadrícula con el pantalón encima,
-renderizado por el proveedor de `TRYON_LOWER_PROVIDER` (Vertex, que sí cambia
-el pantalón en fotos de medio muslo). Reutiliza la imagen de la cuadrícula ya
-cacheada, así que cuesta una sola imagen de ese proveedor.
+El look completo: la combinación de la cuadrícula más el pantalón.
+
+- Con `VTON_PROVIDER=gemini`, Gemini genera las tres prendas en una sola
+  imagen desde la foto original, con el tope normal (`TRYON_MAX_PER_*`).
+- Con un proveedor encadenado, el pantalón se pone al final sobre la imagen
+  de la cuadrícula ya cacheada, con el proveedor de `TRYON_LOWER_PROVIDER`
+  (Vertex, que sí cambia el pantalón en fotos de medio muslo). Cuesta una sola
+  imagen de ese proveedor, con su propio tope.
 
 ```json
 {"selection": {"upper_body": "p_…", "outerwear": "p_…"}, "lower_body": "p_…"}
@@ -244,9 +260,8 @@ cacheada, así que cuesta una sola imagen de ese proveedor.
 
 `lower_body` es opcional (por defecto la primera opción de `bottoms`). Mismas
 respuestas que `/matrix/render`; el resultado aparece en `complete_renders`.
-Tiene su propio tope (`TRYON_LOWER_MAX_PER_SESSION`, `TRYON_LOWER_MAX_PER_DAY`):
-al pasarlo, el render queda `failed` con un `error` que dice "límite…". `503`
-si el look completo no está activo.
+Al pasar el tope, el render queda `failed` con un `error` que dice "límite…".
+`503` si el look completo no está activo.
 
 ### `GET /session/{id}/saved-looks` y `POST /session/{id}/saved-looks`
 

@@ -233,3 +233,97 @@ func TestExplainVTONError(t *testing.T) {
 		t.Fatalf("default reason: %s", got)
 	}
 }
+
+// fakeOutfitVTON renders whole outfits in one call, like Gemini.
+type fakeOutfitVTON struct {
+	fakeVTON
+	outfits [][]OutfitGarment
+}
+
+func (f *fakeOutfitVTON) SupportsOutfits() bool { return true }
+
+func (f *fakeOutfitVTON) GenerateOutfit(_ context.Context, person []byte, garments []OutfitGarment) (*VTONResult, error) {
+	f.mu.Lock()
+	f.outfits = append(f.outfits, garments)
+	f.mu.Unlock()
+	out := string(person)
+	for _, g := range garments {
+		out += "+" + string(g.Image)
+	}
+	return &VTONResult{ImageBytes: []byte(out), MimeType: "image/png", ProviderName: "fake-outfit"}, nil
+}
+
+func (f *fakeOutfitVTON) outfitCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.outfits)
+}
+
+func TestOutfitProviderRendersTheWholeComboInOneCall(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	op := &fakeOutfitVTON{}
+	f.r.VTON = NewBudgetedVTON(op, 2, 0)
+	if !f.r.Outfits() {
+		t.Fatal("a budgeted outfit provider should still render whole outfits")
+	}
+
+	rd, err := f.r.Render(ctx, "r1", combo("s1", "z1", "p1"))
+	if err != nil || rd.Status != session.LookStatusReady || rd.Key != "s1|z1|p1" {
+		t.Fatalf("render: %+v %v", rd, err)
+	}
+	if op.outfitCount() != 1 || op.count() != 0 {
+		t.Fatalf("want one outfit call and no chained calls, got %d outfits / %d chained", op.outfitCount(), op.count())
+	}
+	g := op.outfits[0]
+	if len(g) != 3 || g[0].Slot != "upper_body" || g[2].Slot != "lower_body" || g[0].Desc != "Camisa" || string(g[2].Image) != "garment-p1" {
+		t.Fatalf("garments sent: %+v", g)
+	}
+	if !strings.HasSuffix(rd.ImageKey, ".png") {
+		t.Errorf("image key should keep the provider's format: %s", rd.ImageKey)
+	}
+	stored, _ := f.images.Download(ctx, rd.ImageKey)
+	if string(stored) != "person+garment-s1+garment-z1+garment-p1" {
+		t.Fatalf("every garment must go on the original photo in one call: %q", stored)
+	}
+	st, _ := f.store.Get(ctx, "r1")
+	if _, ok := st.Renders["s1"]; ok {
+		t.Error("outfit mode should not create prefix renders")
+	}
+
+	if _, err := f.r.Render(ctx, "r1", combo("s1", "z1", "p1")); err != nil || op.outfitCount() != 1 {
+		t.Fatalf("same combo must be free (calls=%d err=%v)", op.outfitCount(), err)
+	}
+	if _, err := f.r.Render(ctx, "r1", combo("s2", "z1", "p1")); err != nil || op.outfitCount() != 2 {
+		t.Fatalf("a new combo costs one call, calls=%d err=%v", op.outfitCount(), err)
+	}
+	// Session budget is 2 images: the third combination is refused before the call.
+	rd, err = f.r.Render(ctx, "r1", combo("s2", "z2", "p1"))
+	if err == nil || op.outfitCount() != 2 || !strings.Contains(rd.Error, "límite") {
+		t.Fatalf("budget not enforced: calls=%d rd=%+v err=%v", op.outfitCount(), rd, err)
+	}
+}
+
+func TestLookGeneratorAddsPantsWithOutfits(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	op := &fakeOutfitVTON{}
+	f.r.VTON = op
+	_ = f.store.Update(ctx, "r1", func(st *session.State) error {
+		st.Looks = []session.Look{{ID: "look_1", Name: "Boda", Pieces: []session.LookPiece{
+			{Slot: "lower_body", ProductID: "p1"}, {Slot: "upper_body", ProductID: "s1"}, {Slot: "outerwear", ProductID: "z1"},
+		}}}
+		st.LookResults = []session.LookResult{{LookID: "look_1", Status: session.LookStatusPending}}
+		return nil
+	})
+	(&LookGenerator{Store: f.store, Renderer: f.r}).GenerateAll(ctx, "r1")
+
+	st, _ := f.store.Get(ctx, "r1")
+	lr := st.LookResults[0]
+	if lr.Status != session.LookStatusReady || lr.FinalImageURL == "" || len(lr.Pieces) != 3 || lr.Pieces[2].Slot != "lower_body" {
+		t.Fatalf("look result: %+v", lr)
+	}
+	if op.outfitCount() != 1 || len(op.outfits[0]) != 3 {
+		t.Fatalf("want the whole look, pants included, in one call: %+v", op.outfits)
+	}
+}

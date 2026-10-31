@@ -153,3 +153,10 @@ Comparación con la foto del fundador (cortada a medio muslo) y, en la segunda r
 - `imageConfig.aspectRatio` se calcula de la foto de la persona; sin él Pro cambiaba el encuadre a 2:3.
 - La llave de AI Studio necesita nivel de pago: el nivel gratuito tiene cuota 0 para modelos de imagen. `gemini-2.5-flash-image` se apaga el 2027-03-15.
 - Decisión: Pro por defecto; Vertex queda como opción premium. FASHN se veía raro en la opinión del fundador.
+
+### Integración (2026-10-31)
+
+- `VTON_PROVIDER=gemini` es el proveedor por defecto (`gemini-3-pro-image`).
+- `tryon.OutfitProvider`: si el proveedor (o su `BudgetedVTON`) genera looks completos, el `Renderer` manda la combinación entera en una sola llamada desde la foto original, en vez de encadenar prendas. Solo se cachea la combinación completa; cada imagen cuenta una vez en el tope.
+- Con un proveedor así, los looks del agente incluyen el pantalón y `/matrix/complete` queda activo sin `TRYON_LOWER_PROVIDER` (que se ignora con un aviso en el log).
+- `POST /session/{id}/image` guarda los JPEG derechos y sin EXIF (`imageutil.UprightJPEG`): la app sube la foto como sale de la cámara, acostada con la marca de rotación.

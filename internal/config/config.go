@@ -48,7 +48,7 @@ type Config struct {
 	GCPProjectID          string
 	GCPSAKeyJSON          string
 	GCPRegion             string
-	VTONProvider          string // google_vertex | fashn
+	VTONProvider          string // gemini | fashn | google_vertex
 	FashnAPIKey           string
 	FashnModel            string
 	FashnMode             string
@@ -117,7 +117,7 @@ func Load() *Config {
 		GCPProjectID:            getEnv("GCP_PROJECT_ID", ""),
 		GCPSAKeyJSON:            getEnv("GCP_SA_KEY_JSON", ""),
 		GCPRegion:               getEnv("GCP_REGION", "us-central1"),
-		VTONProvider:            getEnv("VTON_PROVIDER", "google_vertex"),
+		VTONProvider:            getEnv("VTON_PROVIDER", "gemini"),
 		FashnAPIKey:             getEnv("FASHN_API_KEY", ""),
 		FashnModel:              getEnv("FASHN_MODEL", "tryon-v1.6"),
 		FashnMode:               getEnv("FASHN_MODE", "balanced"),

@@ -58,6 +58,26 @@ func (b *BudgetedVTON) Generate(ctx context.Context, req VTONRequest) (*VTONResu
 	return b.Inner.Generate(ctx, req)
 }
 
+// SupportsOutfits passes through the wrapped provider's capability.
+func (b *BudgetedVTON) SupportsOutfits() bool {
+	_, ok := AsOutfitProvider(b.Inner)
+	return ok
+}
+
+// GenerateOutfit reserves one call (one billed image) for the whole outfit.
+func (b *BudgetedVTON) GenerateOutfit(ctx context.Context, person []byte, garments []OutfitGarment) (*VTONResult, error) {
+	op, ok := AsOutfitProvider(b.Inner)
+	if !ok {
+		return nil, fmt.Errorf("%s cannot render outfits in one call", b.Inner.Name())
+	}
+	sid := sessionFrom(ctx)
+	if err := b.reserve(sid); err != nil {
+		slog.WarnContext(ctx, "tryon: budget exceeded", "session_id", sid, "error", err)
+		return nil, err
+	}
+	return op.GenerateOutfit(ctx, person, garments)
+}
+
 func (b *BudgetedVTON) reserve(sid string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

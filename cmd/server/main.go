@@ -113,14 +113,19 @@ func main() {
 	}
 	matrixDeps := &api.MatrixDeps{Store: store}
 
-	// Virtual try-on is optional: it needs a GCP project and working Google credentials.
+	// Virtual try-on is optional: it needs the selected provider's credentials.
 	var tryonDeps *api.TryOnDeps
 	if provider, reason := buildVTON(ctx, cfg, cfg.VTONProvider); provider == nil {
 		slog.WarnContext(ctx, "vton disabled", "reason", reason)
 	} else {
 		var vton tryon.VTONProvider = tryon.NewBudgetedVTON(provider, cfg.TryOnMaxPerSession, cfg.TryOnMaxPerDay)
-		completeLooks := false
-		if cfg.TryOnLowerProvider != "" {
+		// A provider that renders whole outfits (Gemini) dresses the pants
+		// itself, in the same single call; no second provider is needed.
+		_, completeLooks := tryon.AsOutfitProvider(vton)
+		if completeLooks && cfg.TryOnLowerProvider != "" {
+			slog.WarnContext(ctx, "TRYON_LOWER_PROVIDER ignored: the main provider renders whole outfits", "provider", provider.Name(), "lower_body_provider", cfg.TryOnLowerProvider)
+		}
+		if !completeLooks && cfg.TryOnLowerProvider != "" {
 			if lower, reason := buildVTON(ctx, cfg, cfg.TryOnLowerProvider); lower == nil {
 				slog.WarnContext(ctx, "complete looks disabled", "reason", reason)
 			} else {
@@ -143,7 +148,7 @@ func main() {
 		chatDeps.Looks = &tryon.LookGenerator{Store: store, Renderer: renderer}
 		matrixDeps.Renderer = renderer
 		matrixDeps.CompleteLooks = completeLooks
-		slog.InfoContext(ctx, "vton enabled", "provider", provider.Name(), "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "product_details", details != nil)
+		slog.InfoContext(ctx, "vton enabled", "provider", provider.Name(), "whole_outfits", renderer.Outfits(), "complete_looks", completeLooks, "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "product_details", details != nil)
 	}
 
 	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, Matrix: matrixDeps, Signed: images})

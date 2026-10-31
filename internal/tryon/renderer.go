@@ -20,10 +20,11 @@ import (
 	"stylerag/internal/storage"
 )
 
-// Renderer produces try-on images for garment combinations. Every prefix of
-// the chain (shirt; shirt+pants; shirt+pants+shoes) is cached in the session,
-// so moving one swipe away usually costs a single VTON call, and identical
-// requests in flight are collapsed.
+// Renderer produces try-on images for garment combinations. With a provider
+// that renders whole outfits (Gemini) each combination is one call from the
+// user's photo. Otherwise garments are chained and every prefix (shirt;
+// shirt+jacket; …) is cached in the session, so moving one swipe away usually
+// costs a single VTON call. Identical requests in flight are collapsed.
 type Renderer struct {
 	Store   session.Store
 	Images  storage.ImageStore
@@ -95,6 +96,9 @@ func (r *Renderer) Render(ctx context.Context, sessionID string, pieces []sessio
 	}
 	if st.ImageKey == "" {
 		return session.Render{}, errors.New("render: session has no photo")
+	}
+	if op, ok := AsOutfitProvider(r.VTON); ok {
+		return r.renderOutfit(ctx, st, pieces, op)
 	}
 	fullKey := session.ComboKey(pieces)
 	if rd, ok := st.Renders[fullKey]; !ok || rd.Status == session.LookStatusFailed || rd.Status == session.LookStatusPending {
@@ -195,18 +199,114 @@ func (r *Renderer) renderStep(ctx context.Context, st *session.State, prefix []s
 		return fail(explainVTONError(err), err)
 	}
 
-	imgKey := fmt.Sprintf("sessions/%s/render_%s_%d.jpg", st.ID, shortKey(key), time.Now().UnixMilli())
-	up, err := r.Images.Upload(ctx, storage.UploadInput{Key: imgKey, Body: bytes.NewReader(out.ImageBytes), ContentType: out.MimeType})
+	rd, err := r.saveRender(ctx, st.ID, prefix, out, start)
 	if err != nil {
 		return fail("no pude guardar la imagen", err)
 	}
+	return rd, out.ImageBytes, nil
+}
+
+// renderOutfit renders the whole combination in one call from the user's
+// photo. Only the full combination is cached: there are no prefixes.
+func (r *Renderer) renderOutfit(ctx context.Context, st *session.State, pieces []session.ComboPiece, op OutfitProvider) (session.Render, error) {
+	key := session.ComboKey(pieces)
+	if rd, ok := st.Renders[key]; ok && rd.Status == session.LookStatusReady {
+		return rd, nil
+	}
+	done, first := r.claim(st.ID, key)
+	if !first {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return session.Render{}, ctx.Err()
+		}
+		cur, err := r.Store.Get(ctx, st.ID)
+		if err != nil {
+			return session.Render{}, err
+		}
+		rd := cur.Renders[key]
+		if rd.Status != session.LookStatusReady {
+			return rd, fmt.Errorf("render: %s failed in another request", key)
+		}
+		return rd, nil
+	}
+	defer r.release(st.ID, key)
+
+	start := time.Now()
+	r.setRender(ctx, st.ID, session.Render{Key: key, Pieces: pieces, Status: session.LookStatusGenerating, UpdatedAt: time.Now()})
+	fail := func(msg string, err error) (session.Render, error) {
+		rd := session.Render{Key: key, Pieces: pieces, Status: session.LookStatusFailed, Error: msg, UpdatedAt: time.Now()}
+		r.setRender(ctx, st.ID, rd)
+		return rd, fmt.Errorf("render %s: %s: %w", key, msg, err)
+	}
+
+	person, err := r.Images.Download(ctx, st.ImageKey)
+	if err != nil {
+		return fail("no pude cargar la imagen base", err)
+	}
+	products := make([]shopping.Product, len(pieces))
+	for i, piece := range pieces {
+		p, ok := st.Products[piece.ProductID]
+		if !ok {
+			return fail("producto desconocido", errors.New(piece.ProductID))
+		}
+		products[i] = p
+	}
+	garments := make([]OutfitGarment, len(pieces))
+	errs := make([]error, len(pieces))
+	var wg sync.WaitGroup
+	for i := range pieces {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			img, p, err := r.garmentImage(ctx, st.ID, products[i])
+			garments[i], errs[i] = OutfitGarment{Image: img, Slot: pieces[i].Slot, Desc: p.Title}, err
+		}(i)
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return fail("no pude descargar la foto de la prenda", err)
+	}
+
+	vtonCtx, cancel := context.WithTimeout(WithSession(ctx, st.ID), r.Timeout)
+	defer cancel()
+	out, err := op.GenerateOutfit(vtonCtx, person, garments)
+	if err != nil {
+		return fail(explainVTONError(err), err)
+	}
+	rd, err := r.saveRender(ctx, st.ID, pieces, out, start)
+	if err != nil {
+		return fail("no pude guardar la imagen", err)
+	}
+	return rd, nil
+}
+
+// saveRender uploads a finished image and records it as ready.
+func (r *Renderer) saveRender(ctx context.Context, sessionID string, pieces []session.ComboPiece, out *VTONResult, start time.Time) (session.Render, error) {
+	key := session.ComboKey(pieces)
+	ext := ".jpg"
+	if out.MimeType == "image/png" {
+		ext = ".png"
+	}
+	imgKey := fmt.Sprintf("sessions/%s/render_%s_%d%s", sessionID, shortKey(key), time.Now().UnixMilli(), ext)
+	up, err := r.Images.Upload(ctx, storage.UploadInput{Key: imgKey, Body: bytes.NewReader(out.ImageBytes), ContentType: out.MimeType})
+	if err != nil {
+		return session.Render{}, err
+	}
 	rd := session.Render{
-		Key: key, Pieces: prefix, Status: session.LookStatusReady,
+		Key: key, Pieces: pieces, Status: session.LookStatusReady,
 		ImageKey: imgKey, ImageURL: up.URL, GenerationMs: time.Since(start).Milliseconds(), UpdatedAt: time.Now(),
 	}
-	r.setRender(ctx, st.ID, rd)
-	slog.InfoContext(ctx, "render: ready", "session_id", st.ID, "key", key, "elapsed_ms", rd.GenerationMs)
-	return rd, out.ImageBytes, nil
+	r.setRender(ctx, sessionID, rd)
+	slog.InfoContext(ctx, "render: ready", "session_id", sessionID, "key", key, "provider", out.ProviderName, "elapsed_ms", rd.GenerationMs)
+	return rd, nil
+}
+
+// Outfits reports whether the provider renders a whole combination in one
+// call; then pants can be part of any look.
+func (r *Renderer) Outfits() bool {
+	_, ok := AsOutfitProvider(r.VTON)
+	return ok
 }
 
 // garmentImage picks the largest available photo of the product, resolving
@@ -371,7 +471,9 @@ func explainVTONError(err error) string {
 	case strings.Contains(msg, "SERVICE_DISABLED") || strings.Contains(msg, "has not been used in project"):
 		return "try-on no disponible: la API de Vertex AI no está habilitada en el proyecto"
 	case strings.Contains(msg, "RESOURCE_EXHAUSTED") || strings.Contains(msg, "returned 429"):
-		return "try-on saturado: cuota de Vertex AI agotada, intenta en un momento"
+		return "try-on saturado: cuota del proveedor agotada, intenta en un momento"
+	case strings.Contains(msg, "gemini blocked") || strings.Contains(msg, "IMAGE_SAFETY") || strings.Contains(msg, "gemini returned no image"):
+		return "el modelo no pudo editar esta foto; prueba con otra foto"
 	case strings.Contains(msg, "context deadline exceeded"):
 		return "la generación tardó demasiado"
 	default:

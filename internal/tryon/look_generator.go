@@ -43,7 +43,7 @@ func (g *LookGenerator) GenerateAll(ctx context.Context, sessionID string) {
 
 func (g *LookGenerator) generateLook(ctx context.Context, sessionID string, look session.Look, st *session.State) {
 	start := time.Now()
-	pieces := comboFromLook(look, st)
+	pieces := comboFromLook(look, st, g.Renderer.Outfits())
 	g.setStatus(ctx, sessionID, look.ID, session.LookStatusGenerating)
 
 	result := session.LookResult{LookID: look.ID, Status: session.LookStatusReady, CreatedAt: time.Now()}
@@ -92,12 +92,17 @@ func (g *LookGenerator) generateLook(ctx context.Context, sessionID string, look
 	slog.InfoContext(ctx, "looks: look done", "session_id", sessionID, "look_id", look.ID, "status", result.Status, "elapsed", time.Since(start))
 }
 
-// comboFromLook orders the look's renderable pieces for chaining.
-func comboFromLook(look session.Look, st *session.State) []session.ComboPiece {
+// comboFromLook orders the look's renderable pieces for chaining. Pants are
+// included only when the provider renders whole outfits (Gemini): chained
+// providers leave them unchanged on mid-thigh photos.
+func comboFromLook(look session.Look, st *session.State, withPants bool) []session.ComboPiece {
 	var out []session.ComboPiece
 	for _, p := range look.Pieces {
 		prod, ok := st.Products[p.ProductID]
-		if !ok || (prod.Thumbnail == "" && prod.LargeImage == "") || session.SlotRank(p.Slot) >= len(session.SlotOrder) {
+		if !ok || (prod.Thumbnail == "" && prod.LargeImage == "") {
+			continue
+		}
+		if session.SlotRank(p.Slot) >= len(session.SlotOrder) && !(withPants && p.Slot == session.BottomSlot) {
 			continue
 		}
 		out = append(out, session.ComboPiece{Slot: p.Slot, ProductID: p.ProductID})

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -157,13 +159,18 @@ func getJSON(t *testing.T, url string) (int, map[string]any) {
 
 func uploadImage(t *testing.T, url string) (int, map[string]any) {
 	t.Helper()
+	return uploadJPEG(t, url, []byte{0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3})
+}
+
+func uploadJPEG(t *testing.T, url string, data []byte) (int, map[string]any) {
+	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	h := make(map[string][]string)
 	h["Content-Disposition"] = []string{`form-data; name="image"; filename="outfit.jpg"`}
 	h["Content-Type"] = []string{"image/jpeg"}
 	part, _ := mw.CreatePart(h)
-	_, _ = part.Write([]byte{0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3})
+	_, _ = part.Write(data)
 	_ = mw.Close()
 	req, _ := http.NewRequest(http.MethodPost, url, &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -370,5 +377,39 @@ func TestPreviewFlow(t *testing.T) {
 	}
 	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_3" || strings.Join(d.Rejected, ",") != "idea_2" {
 		t.Fatalf("the pick must be persisted: %+v", st.Direction)
+	}
+}
+
+func TestUploadStoresPortraitPhotosUpright(t *testing.T) {
+	images := &memImages{}
+	srv := httptest.NewServer(NewRouter(Deps{Images: images, Store: session.NewMemoryStore(time.Hour)}))
+	defer srv.Close()
+
+	// 40x20 landscape pixels flagged "rotate 90° clockwise", like an iPhone portrait.
+	var enc bytes.Buffer
+	if err := jpeg.Encode(&enc, image.NewGray(image.Rect(0, 0, 40, 20)), nil); err != nil {
+		t.Fatal(err)
+	}
+	exif := []byte("Exif\x00\x00MM\x00\x2A\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00")
+	seg := append([]byte{0xFF, 0xE1, 0, byte(len(exif) + 2)}, exif...)
+	photo := append(append([]byte{0xFF, 0xD8}, seg...), enc.Bytes()[2:]...)
+
+	if code, body := uploadJPEG(t, srv.URL+"/session/sess_upright_1/image", photo); code != 200 {
+		t.Fatalf("upload = %d %v", code, body)
+	}
+	keys, _ := images.ListKeys(context.Background(), "sessions/sess_upright_1/")
+	if len(keys) != 1 {
+		t.Fatalf("stored keys = %v", keys)
+	}
+	stored, _ := images.Download(context.Background(), keys[0])
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 20 || cfg.Height != 40 {
+		t.Fatalf("stored %dx%d, want the 20x40 portrait", cfg.Width, cfg.Height)
+	}
+	if bytes.Contains(stored, []byte("Exif")) {
+		t.Fatal("stored photo still has EXIF metadata")
 	}
 }

@@ -31,14 +31,10 @@ type GeminiVTON struct {
 	HTTPClient  *http.Client
 }
 
-// OutfitGarment is one product photo for a single-call outfit render.
-type OutfitGarment struct {
-	Image []byte
-	Slot  string // upper_body | outerwear | lower_body | accessory
-	Desc  string
-}
-
 func (g *GeminiVTON) Name() string { return "gemini:" + g.model() }
+
+// SupportsOutfits is always true: one call renders every garment.
+func (g *GeminiVTON) SupportsOutfits() bool { return true }
 
 func (g *GeminiVTON) model() string {
 	if g.Model == "" {

@@ -1,14 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"stylerag/internal/imageutil"
 	"stylerag/internal/storage"
 )
 
@@ -50,8 +53,29 @@ func imageUploadHandler(store storage.ImageStore) http.HandlerFunc {
 			return
 		}
 
+		var body io.Reader = file
+		if contentType == "image/jpeg" {
+			// Phones store portraits sideways plus an EXIF flag that some
+			// try-on models ignore; store upright pixels without metadata
+			// (this also drops GPS). Keep the original if it cannot be decoded.
+			raw, err := io.ReadAll(file)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "could not read image")
+				return
+			}
+			body = bytes.NewReader(raw)
+			if upright, orientation, err := imageutil.UprightJPEG(raw); err != nil {
+				slog.WarnContext(r.Context(), "image upload: kept original jpeg", "session_id", sessionID, "error", err)
+			} else {
+				body = bytes.NewReader(upright)
+				if orientation != 1 {
+					slog.InfoContext(r.Context(), "image upload: rotated to upright", "session_id", sessionID, "exif_orientation", orientation)
+				}
+			}
+		}
+
 		key := fmt.Sprintf("sessions/%s/welcome_%d%s", sessionID, time.Now().UnixMilli(), ext)
-		out, err := store.Upload(r.Context(), storage.UploadInput{Key: key, Body: file, ContentType: contentType})
+		out, err := store.Upload(r.Context(), storage.UploadInput{Key: key, Body: body, ContentType: contentType})
 		if err != nil {
 			slog.ErrorContext(r.Context(), "image upload failed", "error", err, "session_id", sessionID)
 			writeError(w, http.StatusInternalServerError, "upload failed")
