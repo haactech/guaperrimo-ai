@@ -193,19 +193,27 @@ func TestFullFlow(t *testing.T) {
 	pants, _ := fake.SearchProducts(ctx, shopping.ProductQuery{Query: "pantalón hombre", Limit: 6})
 	shirtID, pantsID := shirts[0].ID, pants[1].ID // Zara MX 899, H&M México 549
 
+	searches := func(shirtCall, pantsCall string) []llm.ToolCall {
+		return []llm.ToolCall{
+			call(shirtCall, "search_products", map[string]any{"query": "camisa hombre"}),
+			call(pantsCall, "search_products", map[string]any{"query": "pantalón hombre"}),
+		}
+	}
 	model := &scripted{responses: []*llm.CompletionResponse{
 		// turn 1: photo ready → question with buttons
 		calls(call("a1", "ask_user", map[string]any{
 			"message": "Buena base. ¿Para qué ocasión?", "input_mode": "buttons",
 			"options": []map[string]string{{"id": "boda", "label": "Boda de día"}, {"id": "cita", "label": "Cita"}},
 		})),
-		// turn 2: button → record, search, finish
-		calls(
+		// turn 2: button + device location. The server already looked up the
+		// nearby stores, so the searches are paused and the user is asked
+		// which store suits him best.
+		calls(append([]llm.ToolCall{
 			call("u1", "update_profile", map[string]any{"occasion": "boda de día", "budget_mxn": 2000, "allow_shipping": true}),
 			call("s1", "find_nearby_stores", map[string]any{}),
-			call("s2", "search_products", map[string]any{"query": "camisa hombre"}),
-			call("s3", "search_products", map[string]any{"query": "pantalón hombre"}),
-		),
+		}, searches("s2", "s3")...)...),
+		// turn 3: store chosen → search, finish
+		calls(searches("s4", "s5")...),
 		calls(call("f1", "finish_recommendation", map[string]any{
 			"summary":          "Con camisa de lino y chino claro vas perfecto para una boda de día.",
 			"priority_actions": []map[string]any{{"id": "camisa_lino", "title": "Camisa de lino", "description": "Azul marino slim", "impact": "alto", "effort": "bajo", "product_ids": []string{shirtID}}},
@@ -215,7 +223,7 @@ func TestFullFlow(t *testing.T) {
 			},
 			"looks": []map[string]any{{"name": "Boda de día", "description": "fresco y limpio", "pieces": []map[string]string{{"slot": "upper_body", "product_id": shirtID}, {"slot": "lower_body", "product_id": pantsID}}}},
 		})),
-		// turn 3: follow-up after the recommendation
+		// turn 4: follow-up after the recommendation
 		calls(call("a2", "ask_user", map[string]any{"message": "¿Quieres que busque zapatos también?", "input_mode": "voice"})),
 	}}
 	srv, store := newTestServer(t, model, "")
@@ -243,8 +251,24 @@ func TestFullFlow(t *testing.T) {
 		"type": "button_response", "option_id": "boda",
 		"location": map[string]any{"lat": 19.4194, "lng": -99.1616, "label": "Roma Norte"},
 	}, nil)
+	if code != 200 || body["is_final"] != false || body["input_mode"] != "buttons" || body["location_known"] != true {
+		t.Fatalf("the server should ask which store once it knows the location: %d %v", code, body)
+	}
+	storeOpts := body["options"].([]any)
+	if len(storeOpts) != 4 || !strings.HasPrefix(storeOpts[0].(map[string]any)["label"].(string), "Zara") || storeOpts[3].(map[string]any)["id"] != "any_store" {
+		t.Fatalf("store options: %v", storeOpts)
+	}
+	st, err := store.Get(ctx, "sess_flow_01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Stores) < 3 || st.Pending != "store" || len(st.Products) != 0 {
+		t.Fatalf("stores should be known and searches paused: stores=%d pending=%q products=%d", len(st.Stores), st.Pending, len(st.Products))
+	}
+
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "button_response", "option_id": storeOpts[0].(map[string]any)["id"]}, nil)
 	if code != 200 || body["is_final"] != true || body["location_known"] != true {
-		if st, err := store.Get(context.Background(), "sess_flow_01"); err == nil {
+		if st, err := store.Get(ctx, "sess_flow_01"); err == nil {
 			for _, m := range st.Messages {
 				if m.Role == llm.RoleTool && strings.Contains(m.Content, "error") {
 					t.Logf("tool %s (%s) -> %s", m.Name, m.ToolCallID, m.Content)
@@ -252,6 +276,9 @@ func TestFullFlow(t *testing.T) {
 			}
 		}
 		t.Fatalf("final turn: %d %v", code, body)
+	}
+	if st, _ = store.Get(ctx, "sess_flow_01"); st.Profile.PreferredStore == nil || st.Profile.PreferredStore.Name != "Zara" {
+		t.Errorf("preferred store not recorded: %+v", st.Profile.PreferredStore)
 	}
 	list := body["shopping_list"].([]any)
 	if len(list) != 2 {
@@ -325,10 +352,8 @@ func TestPreviewFlow(t *testing.T) {
 	idea := func(slot, garment string) map[string]any {
 		return map[string]any{"slot": slot, "garment": garment, "why": "te favorece", "colors": []map[string]string{{"name": "Azul marino", "hex": "#1F2A44"}}}
 	}
-	model := &scripted{responses: []*llm.CompletionResponse{
-		calls(call("a1", "ask_user", map[string]any{"message": "¿Para qué ocasión?", "input_mode": "voice"})),
-		calls(call("u1", "update_profile", map[string]any{"occasion": "boda", "budget_mxn": 2000})),
-		calls(call("p1", "propose_direction", map[string]any{
+	propose := func(id string) llm.ToolCall {
+		return call(id, "propose_direction", map[string]any{
 			"message": "Elige lo que te llame la atención",
 			"brief":   map[string]any{"summary": "Te van los tonos fríos.", "palette": []map[string]string{{"name": "Azul marino", "hex": "#1F2A44"}}},
 			"ideas": []map[string]any{
@@ -336,7 +361,14 @@ func TestPreviewFlow(t *testing.T) {
 				idea("lower_body", "Chino recto"), idea("lower_body", "Pantalón de lino"), idea("lower_body", "Chino slim"),
 				idea("outerwear", "Blazer de punto"), idea("outerwear", "Chamarra de mezclilla"), idea("outerwear", "Saco de lino"),
 			},
-		})),
+		})
+	}
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("a1", "ask_user", map[string]any{"message": "¿Para qué ocasión?", "input_mode": "voice"})),
+		// The proposal is paused by the server's store question…
+		calls(call("u1", "update_profile", map[string]any{"occasion": "boda", "budget_mxn": 2000}), propose("p1")),
+		// …and repeated once the user picked a store.
+		calls(propose("p2")),
 		calls(call("a2", "ask_user", map[string]any{"message": "Listo, ¿busco en tiendas cercanas?", "input_mode": "voice"})),
 	}}
 	store := session.NewMemoryStore(time.Hour)
@@ -349,12 +381,19 @@ func TestPreviewFlow(t *testing.T) {
 	base := srv.URL + "/session/sess_preview_1"
 
 	uploadImage(t, base+"/image")
-	postJSON(t, base+"/chat", map[string]any{"type": "image"}, nil)
+	if code, body := postJSON(t, base+"/chat", map[string]any{"type": "image", "location": map[string]any{"lat": 19.4194, "lng": -99.1616}}, nil); code != 200 || body["location_known"] != true {
+		t.Fatalf("image turn with the device location: %d %v", code, body)
+	}
 	if code, _ := postJSON(t, base+"/chat", map[string]any{"type": "idea_selection", "selected_ideas": []string{"idea_1"}}, nil); code != 409 {
 		t.Fatalf("selection before a preview should be 409, got %d", code)
 	}
 
 	code, body := postJSON(t, base+"/chat", map[string]any{"type": "text", "text": "una boda, 2000 pesos"}, nil)
+	if code != 200 || body["input_mode"] != "buttons" || body["phase"] != "chat" {
+		t.Fatalf("the server should ask which store before the preview: %d %v", code, body)
+	}
+	chosen := body["options"].([]any)[0].(map[string]any)
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "button_response", "option_id": chosen["id"]}, nil)
 	if code != 200 || body["input_mode"] != "preview" || body["phase"] != "preview" {
 		t.Fatalf("preview turn: %d %v", code, body)
 	}
@@ -381,6 +420,9 @@ func TestPreviewFlow(t *testing.T) {
 	}
 	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_4,idea_7" || strings.Join(d.Rejected, ",") != "idea_2,idea_3,idea_5,idea_6,idea_8,idea_9" {
 		t.Fatalf("the pick must be persisted: %+v", st.Direction)
+	}
+	if ps := st.Profile.PreferredStore; ps == nil || ps.PlaceID != chosen["id"] {
+		t.Errorf("the chosen store must be persisted: %+v", st.Profile.PreferredStore)
 	}
 }
 

@@ -40,6 +40,15 @@ Request:
 `location`, `radius_m` y `allow_shipping` son opcionales en cualquier turno.
 El primer turno debe ser `type=image` (la foto se lee de R2, no del `image_url`).
 
+### Preguntas del servidor
+
+Dos preguntas no las decide el modelo: las hace el servidor de forma determinista y resuelve la respuesta sin pasar por el LLM.
+
+1. **Ubicación.** Si la app no envió `location` (del dispositivo) y el usuario no se ha negado, justo antes de la primera búsqueda de productos o del preview de estilo el servidor pregunta "¿en qué colonia o zona y ciudad estás?" (`input_mode: voice`), geocodifica la respuesta y busca tiendas cercanas. Tras dos respuestas que no se pueden ubicar, o si el usuario dice que prefiere comprar en línea, se asume envío a domicilio y el flujo continúa.
+2. **Tienda preferida.** Con la ubicación conocida y al menos dos tiendas cercanas, el servidor ofrece las tres más cercanas como botones (`"Liverpool Insurgentes · 450 m"`, id = `place_id`) más `any_store` ("Cualquiera"); el agente dirige `search_products` a la tienda elegida.
+
+Estas preguntas no cuentan para el límite de preguntas del agente. Enviar `location` desde el primer turno evita la primera; las tiendas cercanas se buscan en paralelo con el análisis de la foto y llegan en `stores` cuando `is_final` es `true`.
+
 Response:
 
 ```json

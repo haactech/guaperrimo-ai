@@ -38,6 +38,11 @@ type Profile struct {
 	Constraints   []string `json:"constraints,omitempty"`
 	PainPoints    []string `json:"pain_points,omitempty"`
 	Notes         string   `json:"notes,omitempty"`
+	// LocationDeclined is set when the user would not say where they are; the
+	// agent then assumes online shopping with home delivery.
+	LocationDeclined bool `json:"location_declined,omitempty"`
+	// PreferredStore is the nearby store the user said he would rather visit.
+	PreferredStore *shopping.StoreRef `json:"preferred_store,omitempty"`
 }
 
 // Option is a button the user can tap.
@@ -52,6 +57,7 @@ type Turn struct {
 	Text      string    `json:"text"`
 	InputMode string    `json:"input_mode,omitempty"` // assistant: buttons|voice|none; user: button|voice|text
 	Options   []Option  `json:"options,omitempty"`
+	Server    bool      `json:"server,omitempty"` // asked by the server itself, not by the model
 	At        time.Time `json:"at"`
 }
 
@@ -154,6 +160,12 @@ type State struct {
 	Location *Location              `json:"location,omitempty"`
 	Profile  Profile                `json:"profile"`
 
+	// Pending names a question the server asked on its own ("location" or
+	// "store"); the next user turn answers it deterministically, without the model.
+	Pending      string `json:"pending,omitempty"`
+	LocationAsks int    `json:"location_asks,omitempty"` // server-side location questions so far
+	StoreAsked   bool   `json:"store_asked,omitempty"`
+
 	Messages   []llm.Message               `json:"messages"`   // agent memory (user/assistant/tool)
 	Transcript []Turn                      `json:"transcript"` // what the user saw
 	Products   map[string]shopping.Product `json:"products"`   // every product the agent has seen
@@ -237,7 +249,7 @@ func (s *State) LastAssistantOptions() []Option {
 func (s *State) QuestionsAsked() int {
 	n := 0
 	for _, t := range s.Transcript {
-		if t.Role == "assistant" && (t.InputMode == "buttons" || t.InputMode == "voice") {
+		if t.Role == "assistant" && !t.Server && (t.InputMode == "buttons" || t.InputMode == "voice") {
 			n++
 		}
 	}

@@ -29,14 +29,22 @@ TU ENTREGABLE FINAL (herramienta finish_recommendation):
 
 	sb.WriteString("CONTEXTO CONOCIDO:\n")
 	sb.WriteString("- Fecha de hoy: " + now.Format("2006-01-02") + "\n")
-	if st.Location != nil {
+	switch {
+	case st.Location != nil:
 		src := "dispositivo"
 		if st.Location.Source == "conversation" {
 			src = "conversación"
 		}
 		sb.WriteString(fmt.Sprintf("- Ubicación: conocida (%s, fuente: %s). NO la preguntes.\n", st.Location.Label, src))
-	} else {
-		sb.WriteString("- Ubicación: DESCONOCIDA. Pregunta colonia o zona y ciudad, y llama set_location.\n")
+	case st.Profile.LocationDeclined:
+		sb.WriteString("- Ubicación: el usuario no quiso darla. No la preguntes; asume compras en línea con envío a domicilio.\n")
+	default:
+		sb.WriteString("- Ubicación: DESCONOCIDA. No la preguntes tú: el servidor se la pide al usuario cuando hace falta. Si él la menciona por su cuenta, llama set_location.\n")
+	}
+	if ps := st.Profile.PreferredStore; ps != nil {
+		sb.WriteString(fmt.Sprintf("- Tienda preferida: %s (%d m). Dirige search_products con store=%q primero y prioriza productos con nearby_store ahí.\n", ps.Name, ps.DistanceM, brand(ps.Name)))
+	} else if st.StoreAsked {
+		sb.WriteString("- Tienda preferida: ninguna; usa las tiendas cercanas encontradas.\n")
 	}
 	p := st.Profile
 	sb.WriteString(fmt.Sprintf("- Ocasión: %s\n", orUnknown(p.Occasion)))
@@ -92,7 +100,7 @@ TU ENTREGABLE FINAL (herramienta finish_recommendation):
 ANTES DE TERMINAR NECESITAS SABER:
 1. La ocasión o momento (evento próximo con fecha aproximada, o día a día).
 2. Presupuesto aproximado en pesos para toda la compra.
-3. Su ubicación (si es desconocida, pregúntala y llama set_location) y si acepta compras en línea con envío.
+3. Si acepta compras en línea con envío. (La ubicación y la tienda preferida las pregunta el servidor; tú no las preguntes.)
 
 FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 `)
