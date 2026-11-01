@@ -372,3 +372,52 @@ func TestAskUserWithUIComponents(t *testing.T) {
 		}
 	})
 }
+
+func TestProgressReportsStages(t *testing.T) {
+	ctx := context.Background()
+	fake := shopping.Fake{}
+	shirts, _ := fake.SearchProducts(ctx, shopping.ProductQuery{Query: "Zara camisa hombre", Limit: 6})
+	pants, _ := fake.SearchProducts(ctx, shopping.ProductQuery{Query: "pantalón hombre", Limit: 6})
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(
+			call("s1", toolSearchProducts, map[string]any{"query": "camisa hombre", "store": "Zara"}),
+			call("s2", toolSearchProducts, map[string]any{"query": "pantalón hombre"}),
+		),
+		calls(call("f1", toolFinish, map[string]any{
+			"summary": "Listo.",
+			"shopping_list": []map[string]any{
+				{"slot": "upper_body", "description": "Camisa", "product_ids": []string{shirts[0].ID}, "priority": 1},
+				{"slot": "lower_body", "description": "Pantalón", "product_ids": []string{pants[1].ID}, "priority": 2},
+			},
+		})),
+	}}
+	r := NewRunner(model, Deps{Shopping: fake}, 6, 4)
+
+	type ev struct{ stage, detail string }
+	var mu sync.Mutex
+	var got []ev
+	ctx = WithProgress(ctx, func(stage, detail string) {
+		mu.Lock()
+		got = append(got, ev{stage, detail})
+		mu.Unlock()
+	})
+	out, err := r.RunTurn(ctx, newState(), TurnInput{Kind: "voice", Text: "dame la recomendación"})
+	if err != nil || !out.IsFinal {
+		t.Fatalf("turn: %v %+v", err, out)
+	}
+	if len(got) != 5 {
+		t.Fatalf("want 5 reports, got %v", got)
+	}
+	if got[0] != (ev{StageThinking, ""}) || got[3] != (ev{StageThinking, ""}) || got[4] != (ev{StageComposing, ""}) {
+		t.Errorf("sequence: %v", got)
+	}
+	details := map[string]bool{got[1].detail: true, got[2].detail: true}
+	if got[1].stage != StageSearchingProducts || got[2].stage != StageSearchingProducts ||
+		!details["Zara camisa hombre"] || !details["pantalón hombre"] {
+		t.Errorf("search reports: %v", got[1:3])
+	}
+}
+
+func TestReportWithoutReporterIsNoop(t *testing.T) {
+	report(context.Background(), StageThinking, "") // must not panic
+}

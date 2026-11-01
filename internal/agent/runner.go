@@ -167,6 +167,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		msgs = append(msgs, llm.Text(llm.RoleSystem, r.systemPrompt(st, now)))
 		msgs = append(msgs, st.Messages...)
 
+		report(ctx, StageThinking, "")
 		resp, err := r.LLM.Complete(ctx, llm.CompletionRequest{
 			Messages:    msgs,
 			Tools:       toolDefinitions(),
@@ -406,6 +407,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return res, nil
 		}
 		ts.mu.Unlock()
+		report(ctx, StageGeocoding, "")
 		geo, err := r.Deps.Shopping.Geocode(ctx, a.Query)
 		if err != nil {
 			slog.WarnContext(ctx, "agent: geocode failed", "query", a.Query, "error", err)
@@ -448,6 +450,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if radius <= 0 {
 			radius = r.Deps.DefaultRadiusM
 		}
+		report(ctx, StageFindingStores, "")
 		stores, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: query, Lat: loc.Lat, Lng: loc.Lng, RadiusM: radius, Limit: r.Deps.MaxStores})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: find stores failed", "error", err)
@@ -499,6 +502,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if limit <= 0 || limit > r.Deps.MaxProducts {
 			limit = r.Deps.MaxProducts
 		}
+		report(ctx, StageSearchingProducts, query)
 		products, err := r.Deps.Shopping.SearchProducts(ctx, shopping.ProductQuery{Query: query, MaxPrice: a.MaxPriceMXN, Location: r.Deps.DefaultLocation, Limit: limit})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: product search failed", "query", query, "error", err)
@@ -570,6 +574,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if paused != "" {
 			return paused, ask
 		}
+		report(ctx, StageProposingPreview, "")
 		r.attachReferences(ctx, d)
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
@@ -602,6 +607,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if err := json.Unmarshal([]byte(args), &a); err != nil {
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
+		report(ctx, StageComposing, "")
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
 		return r.finish(ts.st, a, &ts.finishAttempts, ts.now)

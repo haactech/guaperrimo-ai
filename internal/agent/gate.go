@@ -163,12 +163,14 @@ func (r *Runner) resolvePending(ctx context.Context, st *session.State, in TurnI
 			st.Profile.LocationDeclined = true
 			return "El usuario no quiere dar su ubicación. No la preguntes; asume compras en línea con envío a domicilio."
 		}
+		report(ctx, StageGeocoding, "")
 		geo, err := r.Deps.Shopping.Geocode(ctx, text)
 		if err != nil {
 			slog.WarnContext(ctx, "agent: could not geocode the user's answer", "session_id", st.ID, "text", text, "error", err)
 			return fmt.Sprintf("No se pudo ubicar «%s». El servidor volverá a preguntar; tú no preguntes la ubicación.", text)
 		}
 		st.Location = &session.Location{Lat: geo.Lat, Lng: geo.Lng, Label: geo.Label, Source: "conversation"}
+		report(ctx, StageFindingStores, "")
 		st.AddStores(r.NearbyStores(ctx, st))
 		return fmt.Sprintf("Ubicación registrada: %s (%d tiendas cercanas encontradas). No la vuelvas a preguntar.", geo.Label, len(st.Stores))
 	case "store":
