@@ -261,7 +261,7 @@ Etapas (`stage`, conjunto cerrado):
 Las búsquedas corren en paralelo, así que varios `searching_products` pueden
 llegar seguidos y en cualquier orden. Orden típico del turno de foto:
 `analyzing_photo`, `thinking`, `turn` (con ubicación en ese turno aparece también
-`finding_stores`, antes de `analyzing_photo` o entre ambos). Turno final típico:
+`finding_stores`, justo antes de `analyzing_photo`). Turno final típico:
 `thinking`, `searching_products` (×N), `thinking`, `composing`, `turn`.
 
 Keep-alive: mientras el stream está abierto el servidor escribe la línea de
