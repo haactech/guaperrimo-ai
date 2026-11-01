@@ -219,6 +219,66 @@ Mientras no haya elección, `search_products` está bloqueada.
 }
 ```
 
+## `POST /session/{id}/chat/stream`
+
+Mismo turno que `/chat` (mismo cuerpo, misma validación, misma autenticación),
+pero la respuesta es un stream SSE que cuenta qué está haciendo el estilista
+mientras trabaja (20-60 s) y termina con la respuesta normal.
+
+Cabeceras: `Content-Type: text/event-stream`, `Cache-Control: no-cache`,
+`Connection: keep-alive`, `X-Accel-Buffering: no`. Cada evento termina con una
+línea en blanco y se envía de inmediato.
+
+```
+event: status
+data: {"stage":"searching_products","detail":"Zara camisa de lino hombre"}
+
+event: turn
+data: { ...exactamente el JSON que devolvería /chat... }
+```
+
+| Evento | `data` | Cuándo |
+|---|---|---|
+| `status` | `{"stage": "...", "detail": "..."}` (`detail` opcional) | Cero o más veces, mientras el turno avanza |
+| `turn` | La `ChatResponse` completa, idéntica a la de `/chat` | Último evento si el turno salió bien |
+| `error` | `{"status": 504, "message": "..."}` | Último evento si el turno falló; `status` y `message` son los que `/chat` habría devuelto (`error` en su cuerpo JSON) |
+
+Después de `turn` o `error` el servidor cierra la respuesta; nunca hay nada
+posterior.
+
+Etapas (`stage`, conjunto cerrado):
+
+| `stage` | Significado |
+|---|---|
+| `analyzing_photo` | Visión sobre la foto (turno `image`) |
+| `finding_stores` | Búsqueda de tiendas cercanas |
+| `geocoding` | Geocodificando una ubicación (tool `set_location` o respuesta del usuario) |
+| `thinking` | Antes de cada llamada al modelo (una vez por llamada) |
+| `searching_products` | Búsqueda de productos; `detail` es la consulta (con la tienda al inicio si aplica) |
+| `proposing_preview` | Armando las referencias del preview de estilo |
+| `composing` | El modelo llegó a `finish_recommendation`; se arma la recomendación |
+
+Las búsquedas corren en paralelo, así que varios `searching_products` pueden
+llegar seguidos y en cualquier orden. Orden típico del turno de foto:
+`analyzing_photo`, `thinking`, `turn` (con ubicación en ese turno aparece también
+`finding_stores`, antes de `analyzing_photo` o entre ambos). Turno final típico:
+`thinking`, `searching_products` (×N), `thinking`, `composing`, `turn`.
+
+Keep-alive: mientras el stream está abierto el servidor escribe la línea de
+comentario `: ping` cada 10 s. Los clientes SSE la ignoran.
+
+Errores:
+
+- Lo que `/chat` rechaza antes de empezar a trabajar (`400` id o cuerpo inválido,
+  `401`, `404` sesión inexistente, `409` fase incorrecta) se responde igual que
+  `/chat`: estado HTTP real y cuerpo `{"error": "..."}` en JSON, sin stream.
+- Una vez enviadas las cabeceras el estado HTTP es siempre `200`; cualquier fallo
+  posterior (`409 upload a photo first`, `502`, `504`...) llega como evento
+  `error`. Si el cliente se desconecta el servidor cancela el turno sin escribir más.
+
+Compatibilidad: `/chat` sigue funcionando sin cambios. Un servidor sin este
+endpoint responde `404` o `405`; la app debe caer entonces a `POST /chat`.
+
 ## `GET /session/{id}/recommendation`
 
 Misma forma que la respuesta final de `/chat`. `404` si aún no hay recomendación.
