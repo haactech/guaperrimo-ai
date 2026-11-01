@@ -107,6 +107,11 @@ type turnState struct {
 	searches       int
 	finishAttempts int
 	serverAsk      *TurnOutput // set by a tool when the server must ask the user something; it ends the turn
+	// storesAtStart is how many nearby stores were known when the turn began
+	// (after a geocoded answer). Stores the model discovers mid-turn with
+	// find_nearby_stores do not trigger the store question until the next turn,
+	// otherwise a concurrent search_products batch would be paused at random.
+	storesAtStart int
 }
 
 func isTerminal(name string) bool {
@@ -155,7 +160,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 	}
 
 	out := &TurnOutput{}
-	ts := &turnState{st: st, now: now}
+	ts := &turnState{st: st, now: now, storesAtStart: len(st.Stores)}
 
 	for step := 0; step < r.MaxSteps; step++ {
 		msgs := make([]llm.Message, 0, len(st.Messages)+1)

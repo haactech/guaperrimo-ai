@@ -58,7 +58,7 @@ func looksLikeRefusal(text string) bool {
 // "" means the tool may proceed.
 func (r *Runner) pauseForServerQuestion(ts *turnState) string {
 	if ts.serverAsk == nil {
-		ts.serverAsk = r.serverQuestion(ts.st, ts.now)
+		ts.serverAsk = r.serverQuestion(ts.st, ts.now, ts.storesAtStart)
 	}
 	if ts.serverAsk == nil {
 		return ""
@@ -73,7 +73,7 @@ func (r *Runner) pauseForServerQuestion(ts *turnState) string {
 // serverQuestion returns the question the server must ask before the agent
 // can search or propose, or nil when nothing is missing. Follow-ups after a
 // recommendation are never gated.
-func (r *Runner) serverQuestion(st *session.State, now time.Time) *TurnOutput {
+func (r *Runner) serverQuestion(st *session.State, now time.Time, storesKnown int) *TurnOutput {
 	if st.Recommendation != nil {
 		return nil
 	}
@@ -92,7 +92,7 @@ func (r *Runner) serverQuestion(st *session.State, now time.Time) *TurnOutput {
 		r.recordServerAsk(st, msg, "voice", nil, comps, now)
 		return &TurnOutput{Message: msg, InputMode: "voice", UI: comps}
 	}
-	if st.Location != nil && !st.StoreAsked && st.Profile.PreferredStore == nil && len(st.Stores) >= 2 {
+	if st.Location != nil && !st.StoreAsked && st.Profile.PreferredStore == nil && storesKnown >= 2 && len(st.Stores) >= 2 {
 		st.StoreAsked = true
 		st.Pending = "store"
 		opts := storeOptions(st.Stores, storeOptionCount)
