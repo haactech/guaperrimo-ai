@@ -81,3 +81,7 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	}
 	return w.ResponseWriter.Write(b)
 }
+
+// Unwrap lets http.ResponseController reach the underlying writer (Flush, for
+// the event stream).
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

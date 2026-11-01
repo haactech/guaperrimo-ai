@@ -33,6 +33,7 @@ func NewRouter(d Deps) http.Handler {
 	}
 	mux.HandleFunc("POST /session/{id}/image", imageUploadHandler(d.Images))
 	mux.HandleFunc("POST /session/{id}/chat", chatHandler(d.Chat))
+	mux.HandleFunc("POST /session/{id}/chat/stream", chatStreamHandler(d.Chat))
 	mux.HandleFunc("GET /session/{id}/recommendation", recommendationHandler(d.Store))
 	mux.HandleFunc("GET /session/{id}/looks", looksHandler(d.Store))
 	if d.TryOn != nil {
