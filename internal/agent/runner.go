@@ -79,7 +79,7 @@ func NewRunner(p llm.Provider, deps Deps, maxSteps, maxQuestions int) *Runner {
 
 // TurnInput is what the user just did.
 type TurnInput struct {
-	Kind string // "system" (photo ready) | "button" | "voice" | "text" | "selection"
+	Kind string // "system" (photo ready) | "button" | "voice" | "text" | "selection" | "ui" (slider)
 	Text string
 	// Selected and Feedback carry a "selection" turn: the ideas the user liked
 	// in the preview and an optional comment.
@@ -133,6 +133,8 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		userText = "[sistema] La foto del usuario ya fue analizada. Inicia la conversación."
 	case "button":
 		userText = "[botón] " + userText
+	case "ui":
+		userText = "[ui] " + userText
 	case "selection":
 		if st.Direction == nil {
 			return nil, errors.New("agent: selection without a proposed direction")

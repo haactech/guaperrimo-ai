@@ -15,12 +15,14 @@ type LocationDTO struct {
 
 // ChatRequest is the input for POST /session/{id}/chat.
 type ChatRequest struct {
-	Type          string       `json:"type"`                     // image | button_response | voice_response | text | idea_selection
+	Type          string       `json:"type"`                     // image | button_response | voice_response | text | idea_selection | ui_action
 	ImageURL      string       `json:"image_url,omitempty"`      // informational; the photo is read from storage
 	OptionID      string       `json:"option_id,omitempty"`      // type=button_response
 	Transcript    string       `json:"transcript,omitempty"`     // type=voice_response
 	Text          string       `json:"text,omitempty"`           // type=text, or the optional comment of idea_selection
 	SelectedIdeas []string     `json:"selected_ideas,omitempty"` // type=idea_selection; may be empty if text says what he wants instead
+	ComponentID   string       `json:"component_id,omitempty"`   // type=ui_action: id of the slider that changed
+	Value         string       `json:"value,omitempty"`          // type=ui_action: the slider value, as text
 	Location      *LocationDTO `json:"location,omitempty"`       // optional, any turn
 	RadiusM       int          `json:"radius_m,omitempty"`       // optional, any turn
 	AllowShipping *bool        `json:"allow_shipping,omitempty"` // optional, any turn

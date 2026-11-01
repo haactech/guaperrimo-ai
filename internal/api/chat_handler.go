@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +123,15 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			return
 		}
 
+		if input.Kind == "ui" {
+			text, err := applyUIAction(st, req)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			input.Text = text
+		}
+
 		<-storesDone
 		st.AddStores(stores)
 		if input.Kind == "button" {
@@ -215,13 +226,21 @@ func turnInput(req ChatRequest) (agent.TurnInput, error) {
 			return agent.TurnInput{}, fmt.Errorf("missing field: text")
 		}
 		return agent.TurnInput{Kind: "text", Text: req.Text}, nil
+	case "ui_action":
+		if strings.TrimSpace(req.ComponentID) == "" {
+			return agent.TurnInput{}, fmt.Errorf("missing field: component_id")
+		}
+		if strings.TrimSpace(req.Value) == "" {
+			return agent.TurnInput{}, fmt.Errorf("missing field: value")
+		}
+		return agent.TurnInput{Kind: "ui", Text: req.Value}, nil // text is completed from the component
 	case "idea_selection":
 		if len(req.SelectedIdeas) == 0 && strings.TrimSpace(req.Text) == "" {
 			return agent.TurnInput{}, fmt.Errorf("idea_selection needs selected_ideas or text")
 		}
 		return agent.TurnInput{Kind: "selection", Selected: req.SelectedIdeas, Feedback: req.Text}, nil
 	default:
-		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response, text or idea_selection")
+		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response, text, idea_selection or ui_action")
 	}
 }
 
@@ -266,6 +285,37 @@ func applyTurnContext(st *session.State, req ChatRequest) {
 	if req.AllowShipping != nil {
 		st.Profile.AllowShipping = req.AllowShipping
 	}
+}
+
+// applyUIAction resolves a slider action against the components of the last
+// assistant turn. When the slider is bound to a profile field the value is
+// written to the profile right here, so it never depends on the model. It
+// returns the text the agent sees after "[ui] ".
+func applyUIAction(st *session.State, req ChatRequest) (string, error) {
+	c := ui.FindByID(st.LastAssistantUI(), strings.TrimSpace(req.ComponentID))
+	if c == nil || c.Type != ui.TypeSlider {
+		return "", fmt.Errorf("unknown component_id: %s", req.ComponentID)
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(req.Value), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return "", fmt.Errorf("value must be a number")
+	}
+	v = math.Min(math.Max(v, c.Min), c.Max)
+	switch c.ProfileField {
+	case ui.FieldBudgetMXN:
+		st.Profile.BudgetMXN = v
+	case ui.FieldRadiusM:
+		st.Profile.RadiusM = int(math.Round(v))
+	}
+	label := c.Label
+	if label == "" {
+		label = c.ID
+	}
+	text := label + ": " + strconv.FormatFloat(v, 'f', -1, 64)
+	if c.Unit != "" {
+		text += " " + c.Unit
+	}
+	return text, nil
 }
 
 func optionLabel(st *session.State, optionID string) string {
