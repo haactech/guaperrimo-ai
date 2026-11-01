@@ -39,149 +39,178 @@ type ChatDeps struct {
 	TurnTimeout      time.Duration
 }
 
+// apiError is a failure of a chat turn: the HTTP status /chat answers with and
+// the message the client sees.
+type apiError struct {
+	Status  int
+	Message string
+}
+
+func (e *apiError) Error() string { return e.Message }
+
+func newAPIError(status int, msg string) *apiError { return &apiError{Status: status, Message: msg} }
+
 func chatHandler(deps *ChatDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sessionID := r.PathValue("id")
-		if !sessionIDPattern.MatchString(sessionID) {
-			writeError(w, http.StatusBadRequest, "invalid session id")
+		sessionID, req, aerr := parseChatRequest(w, r)
+		if aerr != nil {
+			writeError(w, aerr.Status, aerr.Message)
 			return
 		}
-		var req ChatRequest
-		if err := decodeJSON(w, r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
+		resp, aerr := runChatTurn(r.Context(), deps, sessionID, req, nil)
+		if aerr != nil {
+			writeError(w, aerr.Status, aerr.Message)
 			return
 		}
-		input, err := turnInput(req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		timeout := deps.TurnTimeout
-		if timeout <= 0 {
-			timeout = 150 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
-
-		st, err := deps.Store.Get(ctx, sessionID)
-		isNew := false
-		if err != nil {
-			if !errors.Is(err, session.ErrNotFound) {
-				slog.ErrorContext(ctx, "chat: load session", "error", err, "session_id", sessionID)
-				writeError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			if req.Type != "image" {
-				writeError(w, http.StatusNotFound, "session not found or expired")
-				return
-			}
-			st = session.New(sessionID)
-			isNew = true
-		}
-
-		applyTurnContext(st, req)
-
-		// Nearby stores are looked up as soon as the location is known, in
-		// parallel with the photo analysis on the first turn, so the agent never
-		// has to ask for them and the server can offer them as options.
-		var stores []shopping.Store
-		storesDone := make(chan struct{})
-		if st.Location != nil && len(st.Stores) == 0 {
-			go func() {
-				defer close(storesDone)
-				stores = deps.Runner.NearbyStores(ctx, st)
-			}()
-		} else {
-			close(storesDone)
-		}
-
-		if req.Type == "image" {
-			if st.Phase != session.PhaseCapture {
-				writeError(w, http.StatusConflict, "session already initialized")
-				return
-			}
-			if err := analyzePhoto(ctx, deps, st); err != nil {
-				if errors.Is(err, errNoPhoto) {
-					writeError(w, http.StatusConflict, "upload a photo first")
-					return
-				}
-				if ctx.Err() != nil {
-					writeError(w, http.StatusGatewayTimeout, "analysis timeout")
-					return
-				}
-				slog.ErrorContext(ctx, "chat: photo analysis failed", "error", err, "session_id", sessionID)
-				writeError(w, http.StatusBadGateway, "photo analysis failed")
-				return
-			}
-		} else if st.Phase == session.PhaseCapture {
-			writeError(w, http.StatusConflict, "send the photo turn first")
-			return
-		}
-		if req.Type == "idea_selection" && (st.Phase != session.PhasePreview || st.Direction == nil) {
-			writeError(w, http.StatusConflict, "no style preview is waiting for a selection")
-			return
-		}
-
-		if input.Kind == "ui" {
-			text, err := applyUIAction(st, req)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			input.Text = text
-		}
-
-		<-storesDone
-		st.AddStores(stores)
-		if input.Kind == "button" {
-			input.Text = optionLabel(st, req.OptionID)
-		}
-
-		out, err := deps.Runner.RunTurn(ctx, st, input)
-		if err != nil {
-			if ctx.Err() != nil {
-				writeError(w, http.StatusGatewayTimeout, "the stylist took too long, try again")
-				return
-			}
-			slog.ErrorContext(ctx, "chat: agent turn failed", "error", err, "session_id", sessionID)
-			writeError(w, http.StatusBadGateway, "the stylist could not answer, try again")
-			return
-		}
-
-		if out.IsFinal {
-			st.Matrix = session.BuildMatrix(st, deps.MatrixMaxPerSlot)
-		}
-		looksGenerating := false
-		if out.IsFinal && deps.AutoLooks && deps.Looks != nil && len(st.Looks) > 0 && st.ImageKey != "" {
-			st.LookResults = make([]session.LookResult, 0, len(st.Looks))
-			for _, l := range st.Looks {
-				st.LookResults = append(st.LookResults, session.LookResult{LookID: l.ID, Status: session.LookStatusPending, CreatedAt: time.Now()})
-			}
-			looksGenerating = true
-		}
-
-		if err := persist(ctx, deps.Store, st, isNew, out.IsFinal); err != nil {
-			slog.ErrorContext(ctx, "chat: save session", "error", err, "session_id", sessionID)
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-
-		if looksGenerating {
-			go deps.Looks.GenerateAll(context.WithoutCancel(ctx), sessionID)
-		}
-		// No prewarm: every try-on image is billed (~1 USD on Vertex), so
-		// images are generated only when the user asks for one.
-
-		slog.InfoContext(ctx, "chat: turn done",
-			"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,
-			"steps", out.Steps, "tools", strings.Join(out.ToolsUsed, ","), "final", out.IsFinal)
-
-		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.UI, out.IsFinal)
-		resp.LooksGenerating = looksGenerating
-		resp.MatrixAvailable = st.Matrix != nil
 		writeJSON(w, http.StatusOK, resp)
 	}
+}
+
+// parseChatRequest validates the session id and decodes the body, the part of
+// the validation shared by /chat and /chat/stream.
+func parseChatRequest(w http.ResponseWriter, r *http.Request) (string, ChatRequest, *apiError) {
+	var req ChatRequest
+	sessionID := r.PathValue("id")
+	if !sessionIDPattern.MatchString(sessionID) {
+		return "", req, newAPIError(http.StatusBadRequest, "invalid session id")
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		return "", req, newAPIError(http.StatusBadRequest, "invalid JSON body")
+	}
+	return sessionID, req, nil
+}
+
+// runChatTurn runs one conversation turn and returns the response /chat sends.
+// report (may be nil) is told which stage the turn is in.
+func runChatTurn(ctx context.Context, deps *ChatDeps, sessionID string, req ChatRequest, report func(stage, detail string)) (*ChatResponse, *apiError) {
+	if report == nil {
+		report = func(string, string) {}
+	}
+	input, err := turnInput(req)
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, err.Error())
+	}
+
+	timeout := deps.TurnTimeout
+	if timeout <= 0 {
+		timeout = 150 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ctx = agent.WithProgress(ctx, report)
+
+	st, err := deps.Store.Get(ctx, sessionID)
+	isNew := false
+	if err != nil {
+		if !errors.Is(err, session.ErrNotFound) {
+			slog.ErrorContext(ctx, "chat: load session", "error", err, "session_id", sessionID)
+			return nil, newAPIError(http.StatusInternalServerError, "internal error")
+		}
+		if req.Type != "image" {
+			return nil, newAPIError(http.StatusNotFound, "session not found or expired")
+		}
+		st = session.New(sessionID)
+		isNew = true
+	}
+
+	applyTurnContext(st, req)
+
+	// Cheap request checks come before any work starts (and before any
+	// progress is reported), so a rejected turn fails before a stream opens.
+	if req.Type == "image" {
+		if st.Phase != session.PhaseCapture {
+			return nil, newAPIError(http.StatusConflict, "session already initialized")
+		}
+	} else if st.Phase == session.PhaseCapture {
+		return nil, newAPIError(http.StatusConflict, "send the photo turn first")
+	}
+	if req.Type == "idea_selection" && (st.Phase != session.PhasePreview || st.Direction == nil) {
+		return nil, newAPIError(http.StatusConflict, "no style preview is waiting for a selection")
+	}
+	if input.Kind == "ui" {
+		text, err := applyUIAction(st, req)
+		if err != nil {
+			return nil, newAPIError(http.StatusBadRequest, err.Error())
+		}
+		input.Text = text
+	}
+
+	// Nearby stores are looked up as soon as the location is known, in
+	// parallel with the photo analysis on the first turn, so the agent never
+	// has to ask for them and the server can offer them as options.
+	var stores []shopping.Store
+	storesDone := make(chan struct{})
+	if st.Location != nil && len(st.Stores) == 0 {
+		report(agent.StageFindingStores, "")
+		go func() {
+			defer close(storesDone)
+			stores = deps.Runner.NearbyStores(ctx, st)
+		}()
+	} else {
+		close(storesDone)
+	}
+
+	if req.Type == "image" {
+		report(agent.StageAnalyzingPhoto, "")
+		if err := analyzePhoto(ctx, deps, st); err != nil {
+			<-storesDone
+			if errors.Is(err, errNoPhoto) {
+				return nil, newAPIError(http.StatusConflict, "upload a photo first")
+			}
+			if ctx.Err() != nil {
+				return nil, newAPIError(http.StatusGatewayTimeout, "analysis timeout")
+			}
+			slog.ErrorContext(ctx, "chat: photo analysis failed", "error", err, "session_id", sessionID)
+			return nil, newAPIError(http.StatusBadGateway, "photo analysis failed")
+		}
+	}
+
+	<-storesDone
+	st.AddStores(stores)
+	if input.Kind == "button" {
+		input.Text = optionLabel(st, req.OptionID)
+	}
+
+	out, err := deps.Runner.RunTurn(ctx, st, input)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, newAPIError(http.StatusGatewayTimeout, "the stylist took too long, try again")
+		}
+		slog.ErrorContext(ctx, "chat: agent turn failed", "error", err, "session_id", sessionID)
+		return nil, newAPIError(http.StatusBadGateway, "the stylist could not answer, try again")
+	}
+
+	if out.IsFinal {
+		st.Matrix = session.BuildMatrix(st, deps.MatrixMaxPerSlot)
+	}
+	looksGenerating := false
+	if out.IsFinal && deps.AutoLooks && deps.Looks != nil && len(st.Looks) > 0 && st.ImageKey != "" {
+		st.LookResults = make([]session.LookResult, 0, len(st.Looks))
+		for _, l := range st.Looks {
+			st.LookResults = append(st.LookResults, session.LookResult{LookID: l.ID, Status: session.LookStatusPending, CreatedAt: time.Now()})
+		}
+		looksGenerating = true
+	}
+
+	if err := persist(ctx, deps.Store, st, isNew, out.IsFinal); err != nil {
+		slog.ErrorContext(ctx, "chat: save session", "error", err, "session_id", sessionID)
+		return nil, newAPIError(http.StatusInternalServerError, "internal error")
+	}
+
+	if looksGenerating {
+		go deps.Looks.GenerateAll(context.WithoutCancel(ctx), sessionID)
+	}
+	// No prewarm: every try-on image is billed (~1 USD on Vertex), so
+	// images are generated only when the user asks for one.
+
+	slog.InfoContext(ctx, "chat: turn done",
+		"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,
+		"steps", out.Steps, "tools", strings.Join(out.ToolsUsed, ","), "final", out.IsFinal)
+
+	resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.UI, out.IsFinal)
+	resp.LooksGenerating = looksGenerating
+	resp.MatrixAvailable = st.Matrix != nil
+	return resp, nil
 }
 
 // recommendationHandler returns the last recommendation of a session.
