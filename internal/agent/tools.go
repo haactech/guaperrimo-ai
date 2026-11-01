@@ -97,7 +97,7 @@ func toolDefinitions() []llm.Tool {
 		},
 		{
 			Name:        toolPropose,
-			Description: "Termina el turno mostrando la dirección de estilo: un análisis breve con su paleta según colorimetría y 3-6 ideas de prendas (tipo, colores, texturas, corte) para que el usuario elija las que le gustan ANTES de buscar productos. El servidor agrega una foto de referencia real a cada idea.",
+			Description: "Termina el turno mostrando la dirección de estilo: un análisis breve con su paleta según colorimetría y 9 ideas de prendas, 3 camisas, 3 pantalones y 3 chamarras o sacos (tipo, colores, texturas, corte), para que el usuario elija las que le gustan ANTES de buscar productos. Con lo que elija se arman outfits completos. El servidor agrega una foto de referencia real a cada idea.",
 			Parameters: obj(map[string]any{
 				"message": str("Frase breve para leer en voz alta invitándolo a elegir las prendas que le llamen la atención"),
 				"brief": obj(map[string]any{
@@ -115,7 +115,7 @@ func toolDefinitions() []llm.Tool {
 					"silhouette": str("Una frase sobre cortes que le favorecen por su silueta"),
 				}, []string{"summary", "palette"}),
 				"ideas": objArr(obj(map[string]any{
-					"slot":          enum("upper_body: camisa/playera/polo/suéter · outerwear: saco/blazer/chamarra · lower_body: pantalón · accessory: cinturón/reloj/lentes (nunca calzado)", "upper_body", "outerwear", "lower_body", "accessory"),
+					"slot":          enum("upper_body: camisa/playera/polo/suéter · lower_body: pantalón · outerwear: saco/blazer/chamarra (nunca accesorios ni calzado)", "upper_body", "lower_body", "outerwear"),
 					"garment":       str("Tipo de prenda concreto, ej. 'Camisa oxford manga larga'"),
 					"colors":        objArr(obj(map[string]any{"name": str("color"), "hex": str("#RRGGBB")}, []string{"name", "hex"}), "1-2 colores de su paleta"),
 					"textures":      strArr("Tela o textura, ej. 'lino', 'algodón oxford', 'punto fino'"),
@@ -123,7 +123,7 @@ func toolDefinitions() []llm.Tool {
 					"why":           str("Por qué le favorece para esta ocasión, una frase"),
 					"price_min_mxn": num("Precio mínimo esperado en pesos"),
 					"price_max_mxn": num("Precio máximo esperado en pesos, dentro de su presupuesto"),
-				}, []string{"slot", "garment", "colors", "why"}), "3-6 ideas; incluye alternativas distintas en color o textura para ver qué le atrae, cubriendo arriba, encima si aplica y abajo"),
+				}, []string{"slot", "garment", "colors", "why"}), "Exactamente 9 ideas: 3 de upper_body, 3 de lower_body y 3 de outerwear, distintas entre sí en color o textura para ver qué le atrae"),
 			}, []string{"message", "brief", "ideas"}),
 		},
 		{

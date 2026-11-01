@@ -13,8 +13,11 @@ import (
 )
 
 const (
-	minIdeas = 3
-	maxIdeas = 6
+	// The preview offers ideasPerSlot alternatives for each garment of the
+	// outfit; a proposal with fewer than minPerSlot in any of them is sent
+	// back to the model.
+	ideasPerSlot = 3
+	minPerSlot   = 2
 	// referenceTimeout bounds each reference-photo search; a slow one just
 	// leaves its idea without a photo.
 	referenceTimeout = 15 * time.Second
@@ -41,7 +44,19 @@ type proposeDirectionArgs struct {
 	} `json:"ideas"`
 }
 
-var ideaSlots = map[string]bool{"upper_body": true, "outerwear": true, "lower_body": true, "accessory": true}
+// ideaSlots are the garments of a complete outfit, in the order the preview
+// shows them: shirt, pants, jacket. Accessories and footwear are not offered:
+// the try-on renders whole outfits, and a belt alone is not worth an image.
+var ideaSlots = []string{"upper_body", "lower_body", "outerwear"}
+
+func isIdeaSlot(slot string) bool {
+	for _, s := range ideaSlots {
+		if s == slot {
+			return true
+		}
+	}
+	return false
+}
 
 // buildDirection validates the model's proposal. It returns an error message
 // for the model when the proposal is unusable.
@@ -62,14 +77,14 @@ func buildDirection(a proposeDirectionArgs, now time.Time) (*session.Direction, 
 		},
 		CreatedAt: now,
 	}
+	bySlot := map[string][]session.GarmentIdea{}
 	for _, in := range a.Ideas {
 		slot := strings.TrimSpace(in.Slot)
 		garment := strings.TrimSpace(in.Garment)
-		if !ideaSlots[slot] || garment == "" {
-			continue // footwear and unknown slots are dropped, like in finish
+		if !isIdeaSlot(slot) || garment == "" || len(bySlot[slot]) == ideasPerSlot {
+			continue // accessories, footwear, unknown slots and extras are dropped
 		}
 		idea := session.GarmentIdea{
-			ID:          fmt.Sprintf("idea_%d", len(d.Ideas)+1),
 			Slot:        slot,
 			Garment:     garment,
 			Colors:      session.CleanSwatches(in.Colors),
@@ -83,13 +98,23 @@ func buildDirection(a proposeDirectionArgs, now time.Time) (*session.Direction, 
 				idea.Textures = append(idea.Textures, t)
 			}
 		}
-		d.Ideas = append(d.Ideas, idea)
-		if len(d.Ideas) == maxIdeas {
-			break
+		bySlot[slot] = append(bySlot[slot], idea)
+	}
+	var missing []string
+	for _, slot := range ideaSlots {
+		if len(bySlot[slot]) < minPerSlot {
+			missing = append(missing, slot)
 		}
 	}
-	if len(d.Ideas) < minIdeas {
-		return nil, fmt.Sprintf("propón entre %d y %d ideas de prendas (upper_body, outerwear, lower_body o accessory; nunca calzado)", minIdeas, maxIdeas)
+	if len(missing) > 0 {
+		return nil, fmt.Sprintf("propón %d ideas de cada prenda del outfit: upper_body (camisa/playera/polo/suéter), lower_body (pantalón) y outerwear (saco/blazer/chamarra), distintas en color o textura; faltan ideas de %s. Nunca accesorios ni calzado.", ideasPerSlot, strings.Join(missing, ", "))
+	}
+	// Ids follow the preview order: shirts, then pants, then jackets.
+	for _, slot := range ideaSlots {
+		for _, idea := range bySlot[slot] {
+			idea.ID = fmt.Sprintf("idea_%d", len(d.Ideas)+1)
+			d.Ideas = append(d.Ideas, idea)
+		}
 	}
 	return d, ""
 }

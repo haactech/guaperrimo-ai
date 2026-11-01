@@ -97,7 +97,11 @@ responde con `input_mode: "preview"`, `phase: "preview"` y un `direction`:
 }
 ```
 
-- 3 a 6 ideas, slots `upper_body`, `outerwear`, `lower_body` o `accessory`.
+- 9 ideas, 3 por prenda del outfit y en este orden: `upper_body` (camisas,
+  `idea_1`–`idea_3`), `lower_body` (pantalones, `idea_4`–`idea_6`) y
+  `outerwear` (chamarras o sacos, `idea_7`–`idea_9`). Nunca accesorios ni
+  calzado. Si el modelo propone menos de 2 de alguna prenda, el servidor se lo
+  regresa.
 - `hex` puede faltar si el modelo dio uno inválido; el nombre siempre está.
 - `reference` es un producto real en pesos buscado por el servidor (una
   búsqueda por idea, en paralelo), elegido para que su título coincida con el
@@ -108,7 +112,9 @@ La app responde con `{"type": "idea_selection", "selected_ideas": [...],
 "text": "comentario opcional"}` (al menos uno de los dos). Las ideas no
 elegidas quedan como rechazadas en la sesión (`direction.selected`,
 `direction.rejected`, `direction.feedback`): es la señal de qué le atrae. El
-agente busca solo las elegidas; si no eligió ninguna, propone otra ronda.
+agente busca solo las elegidas y arma 2-3 looks, cada uno un outfit completo
+(camisa + pantalón + chamarra); si en una prenda no eligió nada, el agente
+completa con una neutra de su paleta. Si no eligió ninguna, propone otra ronda.
 Mientras no haya elección, `search_products` está bloqueada.
 
 ### Product

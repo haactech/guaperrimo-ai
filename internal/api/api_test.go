@@ -331,7 +331,11 @@ func TestPreviewFlow(t *testing.T) {
 		calls(call("p1", "propose_direction", map[string]any{
 			"message": "Elige lo que te llame la atención",
 			"brief":   map[string]any{"summary": "Te van los tonos fríos.", "palette": []map[string]string{{"name": "Azul marino", "hex": "#1F2A44"}}},
-			"ideas":   []map[string]any{idea("upper_body", "Camisa oxford"), idea("outerwear", "Blazer de punto"), idea("lower_body", "Chino recto")},
+			"ideas": []map[string]any{
+				idea("upper_body", "Camisa oxford"), idea("upper_body", "Camisa de lino"), idea("upper_body", "Polo de punto"),
+				idea("lower_body", "Chino recto"), idea("lower_body", "Pantalón de lino"), idea("lower_body", "Chino slim"),
+				idea("outerwear", "Blazer de punto"), idea("outerwear", "Chamarra de mezclilla"), idea("outerwear", "Saco de lino"),
+			},
 		})),
 		calls(call("a2", "ask_user", map[string]any{"message": "Listo, ¿busco en tiendas cercanas?", "input_mode": "voice"})),
 	}}
@@ -357,7 +361,7 @@ func TestPreviewFlow(t *testing.T) {
 	dir := body["direction"].(map[string]any)
 	ideas := dir["ideas"].([]any)
 	first := ideas[0].(map[string]any)
-	if len(ideas) != 3 || first["id"] != "idea_1" || first["reference"].(map[string]any)["thumbnail"] == "" {
+	if len(ideas) != 9 || first["id"] != "idea_1" || first["reference"].(map[string]any)["thumbnail"] == "" {
 		t.Fatalf("ideas with reference photos expected: %v", ideas)
 	}
 	if dir["brief"].(map[string]any)["palette"].([]any)[0].(map[string]any)["hex"] != "#1F2A44" {
@@ -367,7 +371,7 @@ func TestPreviewFlow(t *testing.T) {
 	if code, _ := postJSON(t, base+"/chat", map[string]any{"type": "idea_selection"}, nil); code != 400 {
 		t.Fatalf("empty selection should be 400, got %d", code)
 	}
-	code, body = postJSON(t, base+"/chat", map[string]any{"type": "idea_selection", "selected_ideas": []string{"idea_1", "idea_3"}}, nil)
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "idea_selection", "selected_ideas": []string{"idea_1", "idea_4", "idea_7"}}, nil)
 	if code != 200 || body["input_mode"] != "voice" || body["direction"] != nil {
 		t.Fatalf("after selection: %d %v", code, body)
 	}
@@ -375,7 +379,7 @@ func TestPreviewFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_3" || strings.Join(d.Rejected, ",") != "idea_2" {
+	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_4,idea_7" || strings.Join(d.Rejected, ",") != "idea_2,idea_3,idea_5,idea_6,idea_8,idea_9" {
 		t.Fatalf("the pick must be persisted: %+v", st.Direction)
 	}
 }

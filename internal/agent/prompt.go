@@ -99,9 +99,10 @@ FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 	if r.Deps.RequirePreview {
 		sb.WriteString(`0. DIRECCIÓN DE ESTILO (obligatoria antes de buscar productos): cuando ya sepas ocasión y presupuesto, llama propose_direction.
    - brief: qué le favorece según su foto, su estación de color y su silueta, en 2-3 frases simples; paleta de 3-6 colores con hex; 0-3 colores a evitar.
-   - ideas: 3-6 prendas concretas (tipo, 1-2 colores de su paleta con hex, textura, corte, porqué, rango de precio en pesos dentro del presupuesto). Da alternativas distintas en color o textura para la misma prenda, así aprendemos qué le atrae. Cubre arriba y abajo, y encima si la ocasión lo pide.
+   - ideas: exactamente 9 prendas concretas, 3 por cada parte del outfit: 3 upper_body (camisa/playera/polo/suéter), 3 lower_body (pantalón) y 3 outerwear (saco/blazer/chamarra). Cada una con tipo, 1-2 colores de su paleta con hex, textura, corte, porqué y rango de precio en pesos. Las 3 de cada parte deben ser distintas en color o textura, así aprendemos qué le atrae. Que la suma de una camisa, un pantalón y una chamarra quepa en el presupuesto. Nunca propongas accesorios ni calzado.
    - El servidor agrega una foto de referencia real a cada idea; el usuario elige las que le gustan y te llega un mensaje [selección].
-   - Después de la [selección]: busca SOLO las ideas elegidas, respetando su color, textura y corte. La referencia de una idea elegida es un producto real que puedes usar como opción si cabe en el presupuesto. No busques ni recomiendes lo que no le llamó la atención.
+   - Después de la [selección]: busca SOLO las ideas elegidas, respetando su color, textura y corte. La referencia de una idea elegida es un producto real que puedes usar como opción si cabe en el presupuesto. No busques ni recomiendes lo que no le llamó la atención. Si en una parte del outfit no eligió nada, elige tú una prenda neutra de su paleta para completar el outfit.
+   - Los looks son outfits completos combinando lo que eligió: cada look lleva upper_body, lower_body y outerwear, y el usuario los ve puestos sobre su foto.
    - Si no eligió nada o pidió otra cosa, ajusta según su comentario y vuelve a llamar propose_direction (máximo una vez más); luego decide tú.
 `)
 	}
@@ -114,7 +115,7 @@ FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
    Si una búsqueda devuelve 0 resultados, simplifica la query (quita store, color o corte) y reintenta UNA vez. Si sigue vacía, incluye el artículo en shopping_list con product_ids vacío y explica en qué tienda cercana buscarlo. No inventes ids ni incluyas prendas que el usuario ya tiene.
 4. La suma del producto principal de cada artículo de la lista NO puede superar el presupuesto. Si se pasa, busca alternativas más baratas o quita artículos.
 5. Slots: camisa, playera, polo o suéter = upper_body; saco, blazer o chamarra = outerwear; pantalón = lower_body; cinturón, reloj o lentes = accessory. Las filas del probador se arman por slot, así que no mezcles sacos con camisas en el mismo slot.
-6. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos y 2-3 looks con upper_body y lower_body, y outerwear cuando aplique, usando product_ids que tengan imagen.
+6. Llama finish_recommendation con: resumen de máximo 3 frases (se lee en voz alta), 2-4 acciones prioritarias, lista de compras de 2-5 artículos y 2-3 looks. Cada look es un outfit completo con upper_body, lower_body y outerwear (outerwear solo se omite si el clima o la ocasión de verdad no lo permiten), usando product_ids que tengan imagen; los looks deben ser combinaciones distintas.
    En cada artículo incluye 2 o 3 product_ids distintos cuando haya opciones dentro del presupuesto (el primero es la principal): el usuario podrá alternarlos sobre su foto. Solo el primero cuenta para el total.
 
 REGLAS DURAS:

@@ -57,6 +57,9 @@ func (g *LookGenerator) generateLook(ctx context.Context, sessionID string, look
 	renderCtx, cancel := context.WithTimeout(ctx, g.Renderer.Timeout*time.Duration(len(pieces))+30*time.Second)
 	defer cancel()
 	final, err := g.Renderer.Render(renderCtx, sessionID, pieces)
+	if err != nil {
+		slog.WarnContext(ctx, "looks: render failed", "session_id", sessionID, "look_id", look.ID, "error", err)
+	}
 
 	cur, _ := g.Store.Get(ctx, sessionID)
 	for i, piece := range pieces {

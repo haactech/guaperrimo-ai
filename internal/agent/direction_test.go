@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -26,11 +27,20 @@ func proposal() map[string]any {
 			"palette":      []map[string]string{{"name": "Azul marino", "hex": "#1f2a44"}, {"name": "Olivo", "hex": "verde"}},
 			"avoid":        []map[string]string{{"name": "Negro puro", "hex": "#000000", "why": "endurece"}},
 		},
+		// Interleaved on purpose: ids must follow shirts, pants, jackets.
 		"ideas": []map[string]any{
 			idea("upper_body", "Camisa oxford manga larga", "Azul cielo", "#9DB8D9"),
 			idea("outerwear", "Saco desestructurado", "Camel", "#B5895A"),
 			idea("lower_body", "Chino recto", "Beige", "#D8C7A5"),
 			idea("footwear", "Mocasines", "Café", "#5A3A22"),
+			idea("accessory", "Cinturón de piel", "Café", "#5A3A22"),
+			idea("upper_body", "Camisa de lino", "Blanco roto", "#F2EDE4"),
+			idea("lower_body", "Pantalón de lino", "Arena", "#CDBB9A"),
+			idea("outerwear", "Chamarra de mezclilla", "Azul medio", "#4A6FA5"),
+			idea("upper_body", "Polo de punto", "Verde olivo", "#6B7445"),
+			idea("lower_body", "Chino slim", "Azul marino", "#1F2A44"),
+			idea("outerwear", "Blazer de punto", "Gris", "#8A8D91"),
+			idea("upper_body", "Playera extra", "Negro", "#111111"),
 		},
 	}
 }
@@ -59,8 +69,16 @@ func TestPreviewGatesSearchUntilTheUserChooses(t *testing.T) {
 		t.Fatalf("expected preview turn: %+v phase=%s", out, st.Phase)
 	}
 	d := st.Direction
-	if len(d.Ideas) != 3 || d.Ideas[0].ID != "idea_1" || d.Round != 1 {
-		t.Fatalf("footwear must be dropped and ids assigned: %+v", d.Ideas)
+	if len(d.Ideas) != 9 || d.Round != 1 {
+		t.Fatalf("want 3 ideas per garment, accessories, footwear and extras dropped: %+v", d.Ideas)
+	}
+	for i, want := range []string{"upper_body", "upper_body", "upper_body", "lower_body", "lower_body", "lower_body", "outerwear", "outerwear", "outerwear"} {
+		if d.Ideas[i].Slot != want || d.Ideas[i].ID != fmt.Sprintf("idea_%d", i+1) {
+			t.Fatalf("idea %d = %s %s, want %s in shirts, pants, jackets order", i+1, d.Ideas[i].ID, d.Ideas[i].Slot, want)
+		}
+	}
+	if d.Ideas[3].Garment != "Chino recto" {
+		t.Fatalf("model order kept inside a garment: %+v", d.Ideas[3])
 	}
 	if d.Brief.Palette[0].Hex != "#1F2A44" || d.Brief.Palette[1].Hex != "" || d.Brief.Palette[1].Name != "Olivo" {
 		t.Fatalf("swatches not cleaned: %+v", d.Brief.Palette)
@@ -74,14 +92,14 @@ func TestPreviewGatesSearchUntilTheUserChooses(t *testing.T) {
 		}
 	}
 
-	_, err = r.RunTurn(context.Background(), st, TurnInput{Kind: "selection", Selected: []string{"idea_1", "idea_3", "nope"}, Feedback: "algo no tan formal"})
+	_, err = r.RunTurn(context.Background(), st, TurnInput{Kind: "selection", Selected: []string{"idea_1", "idea_4", "nope"}, Feedback: "algo no tan formal"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(toolMessage(st, "s1"), "error") {
 		t.Fatalf("search after the pick must run: %s", toolMessage(st, "s1"))
 	}
-	if strings.Join(d.Selected, ",") != "idea_1,idea_3" || strings.Join(d.Rejected, ",") != "idea_2" || d.ChosenAt == nil {
+	if strings.Join(d.Selected, ",") != "idea_1,idea_4" || strings.Join(d.Rejected, ",") != "idea_2,idea_3,idea_5,idea_6,idea_7,idea_8,idea_9" || d.ChosenAt == nil {
 		t.Fatalf("selection: %+v", d)
 	}
 	var sel string
@@ -97,9 +115,15 @@ func TestPreviewGatesSearchUntilTheUserChooses(t *testing.T) {
 	}
 }
 
-func TestProposeNeedsEnoughIdeas(t *testing.T) {
+func TestProposeNeedsIdeasForEveryGarment(t *testing.T) {
 	p := proposal()
-	p["ideas"] = p["ideas"].([]map[string]any)[:2]
+	var ideas []map[string]any
+	for _, i := range p["ideas"].([]map[string]any) {
+		if i["slot"] != "lower_body" || i["garment"] == "Chino recto" {
+			ideas = append(ideas, i) // keep a single pants idea
+		}
+	}
+	p["ideas"] = ideas
 	model := &scripted{responses: []*llm.CompletionResponse{
 		calls(call("p1", toolPropose, p)),
 		calls(call("a1", toolAskUser, map[string]any{"message": "¿Algo más?", "input_mode": "voice"})),
@@ -110,8 +134,8 @@ func TestProposeNeedsEnoughIdeas(t *testing.T) {
 	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "text", Text: "hola"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(toolMessage(st, "p1"), "entre 3 y 6") || st.Direction != nil {
-		t.Fatalf("two ideas must be refused: %s", toolMessage(st, "p1"))
+	if msg := toolMessage(st, "p1"); !strings.Contains(msg, "faltan ideas de lower_body") || strings.Contains(msg, "upper_body,") || st.Direction != nil {
+		t.Fatalf("one pants idea must be refused naming only pants: %s", msg)
 	}
 }
 
