@@ -304,10 +304,18 @@ func TestFullFlow(t *testing.T) {
 	if _, ok := body["looks_generating"]; ok {
 		t.Errorf("looks_generating must be omitted when VTON is disabled")
 	}
+	finalUI := body["ui"].([]any)
+	if body["ui_version"] != float64(1) || body["speech"] != body["message"] {
+		t.Errorf("envelope: %v %v", body["ui_version"], body["speech"])
+	}
+	assertFinalUI(t, finalUI, shirts[0], pants[1])
 
 	code, body = getJSON(t, base+"/recommendation")
 	if code != 200 || body["is_final"] != true || body["message"] == "" {
 		t.Fatalf("recommendation: %d %v", code, body)
+	}
+	if a, b := mustMarshal(t, finalUI), mustMarshal(t, body["ui"]); a != b || body["ui_version"] != float64(1) || body["speech"] != body["message"] {
+		t.Errorf("GET /recommendation must return the same ui:\n%s\n%s", a, b)
 	}
 	code, body = getJSON(t, base+"/looks")
 	if code != 200 || body["status"] != "none" || len(body["looks"].([]any)) != 1 {
@@ -457,5 +465,57 @@ func TestUploadStoresPortraitPhotosUpright(t *testing.T) {
 	}
 	if bytes.Contains(stored, []byte("Exif")) {
 		t.Fatal("stored photo still has EXIF metadata")
+	}
+}
+
+func mustMarshal(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// assertFinalUI checks the server-composed final screen of TestFullFlow:
+// summary, one step, the budget bar (2000 budget) and a card per primary product.
+func assertFinalUI(t *testing.T, comps []any, shirt, pants shopping.Product) {
+	t.Helper()
+	if len(comps) != 5 {
+		t.Fatalf("want text, steps, budget_bar and 2 product_cards, got %s", mustMarshal(t, comps))
+	}
+	at := func(i int) map[string]any { return comps[i].(map[string]any) }
+	if c := at(0); c["type"] != "text" || c["role"] != "stylist" || !strings.HasPrefix(c["text"].(string), "Con camisa de lino") {
+		t.Errorf("summary: %v", c)
+	}
+	steps := at(1)
+	items := steps["items"].([]any)
+	if steps["type"] != "steps" || len(items) != 1 {
+		t.Fatalf("steps: %v", steps)
+	}
+	it := items[0].(map[string]any)
+	if it["title"] != "Camisa de lino" || it["detail"] != "Azul marino slim" || it["product_ids"].([]any)[0] != shirt.ID {
+		t.Errorf("step item: %v", it)
+	}
+	if c := at(2); c["type"] != "budget_bar" || c["total_mxn"] != float64(899+549) || c["budget_mxn"] != float64(2000) || c["label"] != "Total aproximado" {
+		t.Errorf("budget_bar: %v", c)
+	}
+	for i, p := range []shopping.Product{shirt, pants} {
+		c := at(3 + i)
+		if c["type"] != "product_card" || c["product_id"] != p.ID || c["title"] != p.Title || c["price_mxn"] != p.Price || c["store"] != p.Store || c["link"] != p.Link {
+			t.Errorf("product_card %d: %v (want %+v)", i, c, p)
+		}
+		wantImg := p.LargeImage
+		if wantImg == "" {
+			wantImg = p.Thumbnail
+		}
+		if c["image_url"] != wantImg {
+			t.Errorf("product_card %d image_url = %v, want %s", i, c["image_url"], wantImg)
+		}
+	}
+	// the Zara shirt was bought at the chosen nearby store
+	n, ok := at(3)["nearby"].(map[string]any)
+	if !ok || n["name"] != "Zara" || n["distance_m"] == nil {
+		t.Errorf("nearby: %v", at(3)["nearby"])
 	}
 }

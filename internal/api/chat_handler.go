@@ -395,6 +395,7 @@ func buildChatResponse(st *session.State, message, inputMode string, options []s
 		return resp
 	}
 	rec := st.Recommendation
+	resp.UI = composeFinalUI(st) // by code, whatever the model attached
 	resp.TotalMXN = rec.TotalMXN
 	seen := map[string]bool{}
 	for _, a := range rec.PriorityActions {
