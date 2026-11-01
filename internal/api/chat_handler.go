@@ -13,6 +13,7 @@ import (
 
 	"stylerag/internal/agent"
 	"stylerag/internal/session"
+	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
 	"stylerag/internal/tryon"
 	"stylerag/internal/vision"
@@ -76,6 +77,22 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			isNew = true
 		}
 
+		applyTurnContext(st, req)
+
+		// Nearby stores are looked up as soon as the location is known, in
+		// parallel with the photo analysis on the first turn, so the agent never
+		// has to ask for them and the server can offer them as options.
+		var stores []shopping.Store
+		storesDone := make(chan struct{})
+		if st.Location != nil && len(st.Stores) == 0 {
+			go func() {
+				defer close(storesDone)
+				stores = deps.Runner.NearbyStores(ctx, st)
+			}()
+		} else {
+			close(storesDone)
+		}
+
 		if req.Type == "image" {
 			if st.Phase != session.PhaseCapture {
 				writeError(w, http.StatusConflict, "session already initialized")
@@ -103,7 +120,8 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			return
 		}
 
-		applyTurnContext(st, req)
+		<-storesDone
+		st.AddStores(stores)
 		if input.Kind == "button" {
 			input.Text = optionLabel(st, req.OptionID)
 		}
@@ -272,6 +290,9 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 		cur.Analysis = st.Analysis
 		cur.Location = st.Location
 		cur.Profile = st.Profile
+		cur.Pending = st.Pending
+		cur.LocationAsks = st.LocationAsks
+		cur.StoreAsked = st.StoreAsked
 		cur.Messages = st.Messages
 		cur.Transcript = st.Transcript
 		cur.Products = st.Products

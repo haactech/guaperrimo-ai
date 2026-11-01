@@ -104,6 +104,7 @@ type turnState struct {
 	now            time.Time
 	searches       int
 	finishAttempts int
+	serverAsk      *TurnOutput // set by a tool when the server must ask the user something; it ends the turn
 }
 
 func isTerminal(name string) bool {
@@ -143,6 +144,11 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		st.Transcript = append(st.Transcript, session.Turn{Role: "user", Text: in.Text, InputMode: in.Kind, At: now})
 	}
 	st.Turn++
+
+	// A question the server asked last turn is answered here, without the model.
+	if note := r.resolvePending(ctx, st, in); note != "" {
+		st.Messages = append(st.Messages, llm.Text(llm.RoleUser, "[sistema] "+note))
+	}
 
 	out := &TurnOutput{}
 	ts := &turnState{st: st, now: now}
@@ -196,6 +202,9 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		ts.annotateProducts()
 
 		var terminal *TurnOutput
+		if ts.serverAsk != nil {
+			terminal = ts.serverAsk // a server question outranks whatever the model wanted to say
+		}
 		for i, call := range resp.ToolCalls {
 			if !isTerminal(call.Name) {
 				continue
@@ -241,15 +250,16 @@ func (ts *turnState) annotateProducts() {
 // --- tool arguments ---
 
 type updateProfileArgs struct {
-	Occasion      string   `json:"occasion"`
-	EventDate     string   `json:"event_date"`
-	StyleGoal     string   `json:"style_goal"`
-	BudgetMXN     float64  `json:"budget_mxn"`
-	RadiusM       int      `json:"radius_m"`
-	AllowShipping *bool    `json:"allow_shipping"`
-	Constraints   []string `json:"constraints"`
-	PainPoints    []string `json:"pain_points"`
-	Notes         string   `json:"notes"`
+	Occasion         string   `json:"occasion"`
+	EventDate        string   `json:"event_date"`
+	StyleGoal        string   `json:"style_goal"`
+	BudgetMXN        float64  `json:"budget_mxn"`
+	RadiusM          int      `json:"radius_m"`
+	AllowShipping    *bool    `json:"allow_shipping"`
+	Constraints      []string `json:"constraints"`
+	PainPoints       []string `json:"pain_points"`
+	Notes            string   `json:"notes"`
+	LocationDeclined bool     `json:"location_declined"`
 }
 
 type setLocationArgs struct {
@@ -391,9 +401,17 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			slog.WarnContext(ctx, "agent: geocode failed", "query", a.Query, "error", err)
 			return errJSON("no pude ubicar ese lugar; pide al usuario colonia y ciudad más específicas"), nil
 		}
+		loc := &session.Location{Lat: geo.Lat, Lng: geo.Lng, Label: geo.Label, Source: "conversation"}
 		ts.mu.Lock()
-		ts.st.Location = &session.Location{Lat: geo.Lat, Lng: geo.Lng, Label: geo.Label, Source: "conversation"}
-		res := toJSON(map[string]any{"ok": true, "location": ts.st.Location})
+		profileRadius := ts.st.Profile.RadiusM
+		ts.mu.Unlock()
+		stores, _, serr := r.lookupStores(ctx, loc, "", profileRadius)
+		ts.mu.Lock()
+		ts.st.Location = loc
+		if serr == nil {
+			ts.st.AddStores(stores)
+		}
+		res := toJSON(map[string]any{"ok": true, "location": ts.st.Location, "stores_found": len(ts.st.Stores)})
 		ts.mu.Unlock()
 		return res, nil
 
@@ -447,6 +465,10 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if r.Deps.RequirePreview && ts.st.Recommendation == nil && (ts.st.Direction == nil || ts.st.Direction.ChosenAt == nil) {
 			ts.mu.Unlock()
 			return errJSON("todavía no: primero llama propose_direction y espera a que el usuario elija las ideas que le gustan"), nil
+		}
+		if paused := r.pauseForServerQuestion(ts); paused != "" {
+			ts.mu.Unlock()
+			return paused, nil
 		}
 		if ts.searches >= r.Deps.MaxSearchesPerTurn {
 			ts.mu.Unlock()
@@ -524,6 +546,13 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		d, msg := buildDirection(a, ts.now)
 		if msg != "" {
 			return errJSON(msg), nil
+		}
+		ts.mu.Lock()
+		paused := r.pauseForServerQuestion(ts)
+		ask := ts.serverAsk
+		ts.mu.Unlock()
+		if paused != "" {
+			return paused, ask
 		}
 		r.attachReferences(ctx, d)
 		ts.mu.Lock()
@@ -733,6 +762,9 @@ func applyProfile(p *session.Profile, a updateProfileArgs) {
 	}
 	if a.AllowShipping != nil {
 		p.AllowShipping = a.AllowShipping
+	}
+	if a.LocationDeclined {
+		p.LocationDeclined = true
 	}
 	if len(a.Constraints) > 0 {
 		p.Constraints = appendUnique(p.Constraints, a.Constraints)

@@ -46,6 +46,9 @@ func newState() *session.State {
 	st := session.New("sess_test_1")
 	st.Phase = session.PhaseChat
 	st.Analysis = &vision.OutfitAnalysis{DetectedStyles: []string{"casual"}, Observations: "outfit sencillo"}
+	// The app sends the device location with the first turn; tests about the
+	// unknown-location path clear it.
+	st.Location = &session.Location{Lat: 19.4194, Lng: -99.1616, Label: "Roma Norte", Source: "device"}
 	return st
 }
 
@@ -196,6 +199,7 @@ func TestFindStoresRequiresLocation(t *testing.T) {
 	}}
 	r := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 4, 4)
 	st := newState()
+	st.Location = nil
 	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "system"}); err != nil {
 		t.Fatal(err)
 	}
