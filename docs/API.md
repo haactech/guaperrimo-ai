@@ -25,12 +25,14 @@ Request:
 
 ```json
 {
-  "type": "image | button_response | voice_response | text | idea_selection",
+  "type": "image | button_response | voice_response | text | idea_selection | ui_action",
   "image_url": "opcional, informativo",
   "option_id": "requerido con button_response",
   "transcript": "requerido con voice_response",
   "text": "requerido con text; comentario opcional con idea_selection",
   "selected_ideas": ["idea_1", "idea_3"],
+  "component_id": "requerido con ui_action: id del slider",
+  "value": "requerido con ui_action: valor del slider, como texto",
   "location": {"lat": 19.4194, "lng": -99.1616, "label": "Roma Norte"},
   "radius_m": 1500,
   "allow_shipping": true
@@ -44,8 +46,8 @@ El primer turno debe ser `type=image` (la foto se lee de R2, no del `image_url`)
 
 Dos preguntas no las decide el modelo: las hace el servidor de forma determinista y resuelve la respuesta sin pasar por el LLM.
 
-1. **Ubicación.** Si la app no envió `location` (del dispositivo) y el usuario no se ha negado, justo antes de la primera búsqueda de productos o del preview de estilo el servidor pregunta "¿en qué colonia o zona y ciudad estás?" (`input_mode: voice`), geocodifica la respuesta y busca tiendas cercanas. Tras dos respuestas que no se pueden ubicar, o si el usuario dice que prefiere comprar en línea, se asume envío a domicilio y el flujo continúa.
-2. **Tienda preferida.** Con la ubicación conocida y al menos dos tiendas cercanas, el servidor ofrece las tres más cercanas como botones (`"Liverpool Insurgentes · 450 m"`, id = `place_id`) más `any_store` ("Cualquiera"); el agente dirige `search_products` a la tienda elegida.
+1. **Ubicación.** (`ui`: un `text` con la pregunta.) Si la app no envió `location` (del dispositivo) y el usuario no se ha negado, justo antes de la primera búsqueda de productos o del preview de estilo el servidor pregunta "¿en qué colonia o zona y ciudad estás?" (`input_mode: voice`), geocodifica la respuesta y busca tiendas cercanas. Tras dos respuestas que no se pueden ubicar, o si el usuario dice que prefiere comprar en línea, se asume envío a domicilio y el flujo continúa.
+2. **Tienda preferida.** (`ui`: un `text` con la pregunta y un `chips` con `id: "store"` cuyas opciones son las mismas de `options`, `any_store` incluida.) Con la ubicación conocida y al menos dos tiendas cercanas, el servidor ofrece las tres más cercanas como botones (`"Liverpool Insurgentes · 450 m"`, id = `place_id`) más `any_store` ("Cualquiera"); el agente dirige `search_products` a la tienda elegida.
 
 Estas preguntas no cuentan para el límite de preguntas del agente. Enviar `location` desde el primer turno evita la primera; las tiendas cercanas se buscan en paralelo con el análisis de la foto y llegan en `stores` cuando `is_final` es `true`.
 
@@ -57,8 +59,11 @@ Response:
   "phase": "chat | preview | done",
   "turn": 2,
   "message": "texto para TTS",
-  "input_mode": "buttons | voice | preview | none",
+  "input_mode": "buttons | voice | ui | preview | none",
   "options": [{"id": "boda", "label": "Boda de día"}],
+  "ui_version": 1,
+  "speech": "texto que la app lee en voz alta (hoy igual a message)",
+  "ui": [Component],
   "is_final": false,
   "location_known": true,
   "priority_actions": [{"id": "camisa_lino", "title": "…", "description": "…", "impact": "alto", "effort": "bajo", "product_ids": ["p_…"]}],
@@ -74,9 +79,76 @@ Response:
 aparecen cuando `is_final` es `true`. Después de una recomendación el usuario
 puede seguir hablando; el agente ajusta y puede volver a entregar `is_final`.
 
-Errores: `400` cuerpo o id inválido, `404` sesión inexistente, `409` turno de
+Errores: `400` cuerpo o id inválido (en `ui_action`, también falta de `component_id` o `value`, un `component_id` que no es un slider del último turno del asistente o un `value` que no es número), `404` sesión inexistente, `409` turno de
 imagen repetido, turno sin foto o `idea_selection` sin preview pendiente,
 `502` fallo del modelo o del análisis, `504` timeout del turno.
+
+### UI generativa (`ui_version` 1)
+
+Además de `message` y `options`, cada respuesta de `/chat` y de
+`GET /session/{id}/recommendation` trae `ui_version` (`1`), `speech` (lo que la
+app lee en voz alta; hoy igual a `message`) y `ui`, una lista de componentes.
+`ui` se omite cuando no hay nada más que `message`/`options`. Todos los campos
+anteriores siguen igual. Cada componente lleva `type`; la app ignora los tipos
+que no conoce y el servidor no emite otros. Los campos opcionales vacíos se
+omiten.
+
+```json
+{"type":"text","role":"stylist","text":"Buena base. Cuéntame para qué es."}
+{"type":"chips","id":"occasion","select":"single","allow_voice":true,"options":[{"id":"boda_dia","label":"Boda de día"}]}
+{"type":"slider","id":"budget","label":"Presupuesto","min":500,"max":10000,"step":100,"default":2500,"unit":"MXN","profile_field":"budget_mxn"}
+{"type":"palette","swatches":[{"hex":"#1F2A44","name":"Azul marino"}],"avoid":[{"hex":"#000000","name":"Negro"}],"note":"Tonos fríos y profundos"}
+{"type":"steps","items":[{"title":"Camisa de lino","detail":"Azul marino, slim","product_ids":["p_1"]}]}
+{"type":"product_card","product_id":"p_1","title":"Camisa de lino","price_mxn":740,"store":"H&M","image_url":"https://…","link":"https://…","nearby":{"name":"H&M Reforma","distance_m":450}}
+{"type":"budget_bar","total_mxn":2247,"budget_mxn":2500,"label":"Total aproximado"}
+```
+
+- `text.role`: `stylist` | `heading` | `body`.
+- `chips`: `select` es siempre `single`. `allow_voice` indica que el usuario
+  también puede contestar hablando.
+- `slider.profile_field` solo puede ser `budget_mxn` o `radius_m` (se omite si
+  no aplica). `unit` y `label` son opcionales.
+- `palette.avoid` y `note` son opcionales; `swatches[].name` también.
+- `product_card.nearby` aparece solo si el comercio tiene sucursal cercana.
+  `image_url` es la foto grande si existe, si no la miniatura.
+- `budget_bar.budget_mxn` se omite si no se conoce el presupuesto.
+
+**`input_mode: "ui"`** (nuevo): el turno espera un control que no es botón, un
+slider. La app muestra los componentes con un botón de confirmar. Los demás
+modos no cambian; con `buttons` la app puede pintar `options` como siempre o
+los `chips` de `ui`.
+
+**Respuestas de la app**
+
+- Tap en un chip: `{"type":"button_response","option_id":"<id de la opción del chip>"}`.
+  El servidor registra las opciones de los chips como `options` del turno, así
+  que la etiqueta se resuelve igual que con cualquier botón.
+- Slider: `{"type":"ui_action","component_id":"budget","value":"2500"}`. El
+  servidor lo busca en el último turno del asistente, recorta el valor a
+  `min..max` y, si el slider tiene `profile_field`, lo escribe en el perfil
+  (`budget_mxn` → presupuesto, `radius_m` → radio) antes de correr al agente,
+  sin depender del modelo. El agente recibe `[ui] Presupuesto: 2500 MXN`.
+
+**Quién arma qué**
+
+1. Preguntas del modelo (`ask_user`): el modelo puede adjuntar `ui` con
+   `text`, `chips`, `slider` y `palette` (máximo 6, a lo más un chips y un
+   slider). El servidor valida cada uno y descarta en silencio los inválidos
+   (chips sin id o con menos de 2 opciones con `id` y `label`; slider sin id,
+   con `min >= max`, `step <= 0` o `default` fuera de rango; palette sin ningún
+   color `#RRGGBB`; text vacío o con rol desconocido, que por defecto es
+   `stylist`). Si hay `chips` y `options` viene vacío, las opciones se derivan
+   de los chips y `input_mode` pasa a `buttons`. Si hay un `slider`,
+   `input_mode` es `ui`. `message` sigue siendo obligatorio: es el `speech`.
+2. Preguntas del servidor (ubicación y tienda): ver "Preguntas del servidor".
+3. Recomendación final (`is_final: true` y `GET /recommendation`): el servidor
+   compone `ui` por código, nunca el modelo: `text` (stylist, el resumen),
+   `steps` (de `priority_actions`: `title`, `detail` = `description`,
+   `product_ids`), `budget_bar` (`total_mxn`, y `budget_mxn` del perfil si es
+   mayor que 0, etiqueta "Total aproximado") y un `product_card` por cada
+   artículo de la lista con producto principal (el primer `product_id`).
+4. `propose_direction` (`input_mode: "preview"`) no trae `ui`; sigue con
+   `direction`.
 
 ### Preview de estilo (`AGENT_PREVIEW=true`)
 
