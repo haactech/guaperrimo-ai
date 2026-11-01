@@ -20,6 +20,7 @@ import (
 	"stylerag/internal/llm"
 	"stylerag/internal/session"
 	"stylerag/internal/shopping"
+	"stylerag/internal/ui"
 )
 
 var tracer = otel.Tracer("guaperrimo/agent")
@@ -89,8 +90,9 @@ type TurnInput struct {
 // TurnOutput is what the app must show next.
 type TurnOutput struct {
 	Message   string
-	InputMode string // buttons | voice | none
+	InputMode string // buttons | voice | ui | preview | none
 	Options   []session.Option
+	UI        []ui.Component // components next to the message (ask_user, server questions)
 	IsFinal   bool
 	Steps     int
 	ToolsUsed []string
@@ -282,6 +284,7 @@ type askUserArgs struct {
 	Message   string           `json:"message"`
 	InputMode string           `json:"input_mode"`
 	Options   []session.Option `json:"options"`
+	UI        json.RawMessage  `json:"ui"`
 }
 
 type finishArgs struct {
@@ -527,10 +530,16 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 				opts[i].ID = fmt.Sprintf("opt_%d", i+1)
 			}
 		}
+		comps, dropped := ui.Parse(a.UI)
+		if len(dropped) > 0 {
+			slog.WarnContext(ctx, "agent: dropped invalid ui components", "session_id", ts.st.ID, "reasons", strings.Join(dropped, "; "))
+		}
+		mode, opts = applyUI(mode, opts, comps)
+		message := strings.TrimSpace(a.Message)
 		ts.mu.Lock()
-		r.recordAsk(ts.st, strings.TrimSpace(a.Message), mode, opts, ts.now)
+		r.recordAskUI(ts.st, message, mode, opts, comps, ts.now)
 		ts.mu.Unlock()
-		return `{"ok":true}`, &TurnOutput{Message: strings.TrimSpace(a.Message), InputMode: mode, Options: opts}
+		return `{"ok":true}`, &TurnOutput{Message: message, InputMode: mode, Options: opts, UI: comps}
 
 	case toolPropose:
 		var a proposeDirectionArgs
@@ -740,8 +749,28 @@ func (r *Runner) missingForDirection(st *session.State) string {
 }
 
 func (r *Runner) recordAsk(st *session.State, message, mode string, opts []session.Option, now time.Time) {
+	r.recordAskUI(st, message, mode, opts, nil, now)
+}
+
+func (r *Runner) recordAskUI(st *session.State, message, mode string, opts []session.Option, comps []ui.Component, now time.Time) {
 	st.Phase = session.PhaseChat
-	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, At: now})
+	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, UI: comps, At: now})
+}
+
+// applyUI derives the turn's options and input mode from the validated
+// components: chips become the options when the model gave none (mode
+// buttons), and a slider makes the turn wait for a control (mode "ui").
+func applyUI(mode string, opts []session.Option, comps []ui.Component) (string, []session.Option) {
+	if c := ui.FindChips(comps); c != nil && len(opts) == 0 {
+		for _, o := range c.Options {
+			opts = append(opts, session.Option{ID: o.ID, Label: o.Label})
+		}
+		mode = "buttons"
+	}
+	if ui.FindSlider(comps) != nil {
+		mode = "ui"
+	}
+	return mode, opts
 }
 
 func applyProfile(p *session.Profile, a updateProfileArgs) {

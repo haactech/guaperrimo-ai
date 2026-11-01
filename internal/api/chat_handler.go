@@ -16,6 +16,7 @@ import (
 	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
 	"stylerag/internal/tryon"
+	"stylerag/internal/ui"
 	"stylerag/internal/vision"
 )
 
@@ -165,7 +166,7 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,
 			"steps", out.Steps, "tools", strings.Join(out.ToolsUsed, ","), "final", out.IsFinal)
 
-		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.IsFinal)
+		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.UI, out.IsFinal)
 		resp.LooksGenerating = looksGenerating
 		resp.MatrixAvailable = st.Matrix != nil
 		writeJSON(w, http.StatusOK, resp)
@@ -189,7 +190,7 @@ func recommendationHandler(store session.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "no recommendation yet")
 			return
 		}
-		resp := buildChatResponse(st, st.Recommendation.Summary, "none", nil, true)
+		resp := buildChatResponse(st, st.Recommendation.Summary, "none", nil, nil, true)
 		resp.LooksGenerating = len(st.Looks) > 0 && !allLooksDone(st)
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -273,6 +274,14 @@ func optionLabel(st *session.State, optionID string) string {
 			return o.Label
 		}
 	}
+	// A chip the model did not repeat in options still resolves.
+	if c := ui.FindChips(st.LastAssistantUI()); c != nil {
+		for _, o := range c.Options {
+			if o.ID == optionID {
+				return o.Label
+			}
+		}
+	}
 	return optionID
 }
 
@@ -312,13 +321,16 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 	return err
 }
 
-func buildChatResponse(st *session.State, message, inputMode string, options []session.Option, isFinal bool) *ChatResponse {
+func buildChatResponse(st *session.State, message, inputMode string, options []session.Option, components []ui.Component, isFinal bool) *ChatResponse {
 	resp := &ChatResponse{
 		SessionID:     st.ID,
 		Phase:         string(st.Phase),
 		Turn:          st.Turn,
 		Message:       message,
 		InputMode:     inputMode,
+		UIVersion:     ui.Version,
+		Speech:        message,
+		UI:            components,
 		Options:       []ChatOption{},
 		IsFinal:       isFinal,
 		LocationKnown: st.Location != nil,

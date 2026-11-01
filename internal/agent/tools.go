@@ -40,6 +40,30 @@ func enum(desc string, values ...string) map[string]any {
 	return map[string]any{"type": "string", "enum": values, "description": desc}
 }
 
+// uiComponentSchema describes one component the model may attach to ask_user.
+// The server validates each one (internal/ui) and drops the invalid ones.
+func uiComponentSchema() map[string]any {
+	swatch := obj(map[string]any{"hex": str("#RRGGBB"), "name": str("nombre del color")}, []string{"hex"})
+	return obj(map[string]any{
+		"type":          enum("tipo de componente", "text", "chips", "slider", "palette"),
+		"role":          enum("text: stylist (por defecto), heading o body", "stylist", "heading", "body"),
+		"text":          str("text: el texto a mostrar"),
+		"id":            str("chips y slider: identificador corto en snake_case"),
+		"allow_voice":   boolean("chips: true si también puede contestar por voz (por defecto true)"),
+		"options":       objArr(obj(map[string]any{"id": str("id corto"), "label": str("texto, máximo 4 palabras")}, []string{"id", "label"}), "chips: 2-4 opciones, las mismas que options"),
+		"label":         str("slider: etiqueta, ej. 'Presupuesto'"),
+		"min":           num("slider: mínimo"),
+		"max":           num("slider: máximo"),
+		"step":          num("slider: incremento, mayor que 0"),
+		"default":       num("slider: valor inicial entre min y max"),
+		"unit":          str("slider: unidad, ej. 'MXN'"),
+		"profile_field": enum("slider: campo del perfil que el servidor actualiza con el valor", "budget_mxn", "radius_m"),
+		"swatches":      objArr(swatch, "palette: colores que le favorecen"),
+		"avoid":         objArr(swatch, "palette: colores a evitar"),
+		"note":          str("palette: nota breve"),
+	}, []string{"type"})
+}
+
 // toolDefinitions is the full tool set exposed to the model.
 func toolDefinitions() []llm.Tool {
 	return []llm.Tool{
@@ -94,6 +118,7 @@ func toolDefinitions() []llm.Tool {
 					"id":    str("identificador corto en snake_case"),
 					"label": str("texto del botón, máximo 4 palabras"),
 				}, []string{"id", "label"}), "Opciones cuando input_mode es buttons"),
+				"ui": objArr(uiComponentSchema(), "Componentes visuales opcionales (máximo 6) que acompañan la pregunta: text, chips, slider o palette. Ver la sección UI del prompt."),
 			}, []string{"message", "input_mode"}),
 		},
 		{

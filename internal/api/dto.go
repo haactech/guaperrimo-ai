@@ -3,6 +3,7 @@ package api
 import (
 	"stylerag/internal/session"
 	"stylerag/internal/shopping"
+	"stylerag/internal/ui"
 )
 
 // LocationDTO is the device location the app may send with any chat turn.
@@ -57,7 +58,10 @@ type ChatResponse struct {
 	Phase           string                   `json:"phase"`
 	Turn            int                      `json:"turn"`
 	Message         string                   `json:"message"`
-	InputMode       string                   `json:"input_mode"`
+	InputMode       string                   `json:"input_mode"` // buttons | voice | ui | preview | none
+	UIVersion       int                      `json:"ui_version"`
+	Speech          string                   `json:"speech"` // what the app reads aloud; equal to message for now
+	UI              []ui.Component           `json:"ui,omitempty"`
 	Options         []ChatOption             `json:"options"`
 	IsFinal         bool                     `json:"is_final"`
 	LocationKnown   bool                     `json:"location_known"`

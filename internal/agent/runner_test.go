@@ -321,3 +321,54 @@ func TestFinishDropsDuplicateListings(t *testing.T) {
 		t.Fatalf("product ids = %s, want p_a,p_c", got)
 	}
 }
+
+func TestAskUserWithUIComponents(t *testing.T) {
+	askWith := func(args map[string]any) (*TurnOutput, *session.State) {
+		model := &scripted{responses: []*llm.CompletionResponse{calls(call("a1", toolAskUser, args))}}
+		r := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 5, 4)
+		st := newState()
+		out, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "system"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, st
+	}
+	chips := map[string]any{"type": "chips", "id": "occasion", "options": []map[string]string{{"id": "boda", "label": "Boda"}, {"id": "cita", "label": "Cita"}}}
+	slider := map[string]any{"type": "slider", "id": "budget", "label": "Presupuesto", "min": 500, "max": 10000, "step": 100, "default": 2500, "unit": "MXN", "profile_field": "budget_mxn"}
+
+	t.Run("chips without options derive buttons", func(t *testing.T) {
+		out, st := askWith(map[string]any{"message": "¿Para qué ocasión?", "input_mode": "voice", "ui": []any{chips, map[string]any{"type": "product_card"}}})
+		if out.InputMode != "buttons" || len(out.Options) != 2 || out.Options[0].ID != "boda" || out.Options[1].Label != "Cita" {
+			t.Fatalf("options not derived: %+v", out)
+		}
+		if len(out.UI) != 1 || out.UI[0].Type != "chips" {
+			t.Fatalf("invalid component must be dropped: %+v", out.UI)
+		}
+		last := st.Transcript[len(st.Transcript)-1]
+		if len(last.UI) != 1 || last.InputMode != "buttons" || len(last.Options) != 2 {
+			t.Errorf("turn not recorded with its ui: %+v", last)
+		}
+	})
+	t.Run("explicit options win", func(t *testing.T) {
+		out, _ := askWith(map[string]any{"message": "¿Ocasión?", "input_mode": "buttons",
+			"options": []map[string]string{{"id": "x", "label": "X"}, {"id": "y", "label": "Y"}}, "ui": []any{chips}})
+		if out.InputMode != "buttons" || out.Options[0].ID != "x" {
+			t.Fatalf("%+v", out)
+		}
+	})
+	t.Run("slider means ui mode", func(t *testing.T) {
+		out, st := askWith(map[string]any{"message": "¿Cuánto quieres gastar?", "input_mode": "voice", "ui": []any{slider}})
+		if out.InputMode != "ui" || len(out.Options) != 0 || out.UI[0].ProfileField != "budget_mxn" {
+			t.Fatalf("%+v", out)
+		}
+		if st.QuestionsAsked() != 1 {
+			t.Errorf("a ui question counts as a question: %d", st.QuestionsAsked())
+		}
+	})
+	t.Run("all invalid keeps the plain question", func(t *testing.T) {
+		out, _ := askWith(map[string]any{"message": "¿Y?", "input_mode": "voice", "ui": []any{map[string]any{"type": "chips", "id": "a"}}})
+		if out.InputMode != "voice" || len(out.UI) != 0 {
+			t.Fatalf("%+v", out)
+		}
+	})
+}
