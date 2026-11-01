@@ -20,6 +20,7 @@ import (
 	"stylerag/internal/llm"
 	"stylerag/internal/session"
 	"stylerag/internal/shopping"
+	"stylerag/internal/ui"
 )
 
 var tracer = otel.Tracer("guaperrimo/agent")
@@ -78,7 +79,7 @@ func NewRunner(p llm.Provider, deps Deps, maxSteps, maxQuestions int) *Runner {
 
 // TurnInput is what the user just did.
 type TurnInput struct {
-	Kind string // "system" (photo ready) | "button" | "voice" | "text" | "selection"
+	Kind string // "system" (photo ready) | "button" | "voice" | "text" | "selection" | "ui" (slider)
 	Text string
 	// Selected and Feedback carry a "selection" turn: the ideas the user liked
 	// in the preview and an optional comment.
@@ -89,8 +90,9 @@ type TurnInput struct {
 // TurnOutput is what the app must show next.
 type TurnOutput struct {
 	Message   string
-	InputMode string // buttons | voice | none
+	InputMode string // buttons | voice | ui | preview | none
 	Options   []session.Option
+	UI        []ui.Component // components next to the message (ask_user, server questions)
 	IsFinal   bool
 	Steps     int
 	ToolsUsed []string
@@ -105,6 +107,11 @@ type turnState struct {
 	searches       int
 	finishAttempts int
 	serverAsk      *TurnOutput // set by a tool when the server must ask the user something; it ends the turn
+	// storesAtStart is how many nearby stores were known when the turn began
+	// (after a geocoded answer). Stores the model discovers mid-turn with
+	// find_nearby_stores do not trigger the store question until the next turn,
+	// otherwise a concurrent search_products batch would be paused at random.
+	storesAtStart int
 }
 
 func isTerminal(name string) bool {
@@ -131,6 +138,8 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 		userText = "[sistema] La foto del usuario ya fue analizada. Inicia la conversación."
 	case "button":
 		userText = "[botón] " + userText
+	case "ui":
+		userText = "[ui] " + userText
 	case "selection":
 		if st.Direction == nil {
 			return nil, errors.New("agent: selection without a proposed direction")
@@ -151,7 +160,7 @@ func (r *Runner) RunTurn(ctx context.Context, st *session.State, in TurnInput) (
 	}
 
 	out := &TurnOutput{}
-	ts := &turnState{st: st, now: now}
+	ts := &turnState{st: st, now: now, storesAtStart: len(st.Stores)}
 
 	for step := 0; step < r.MaxSteps; step++ {
 		msgs := make([]llm.Message, 0, len(st.Messages)+1)
@@ -282,6 +291,7 @@ type askUserArgs struct {
 	Message   string           `json:"message"`
 	InputMode string           `json:"input_mode"`
 	Options   []session.Option `json:"options"`
+	UI        json.RawMessage  `json:"ui"`
 }
 
 type finishArgs struct {
@@ -527,10 +537,16 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 				opts[i].ID = fmt.Sprintf("opt_%d", i+1)
 			}
 		}
+		comps, dropped := ui.Parse(a.UI)
+		if len(dropped) > 0 {
+			slog.WarnContext(ctx, "agent: dropped invalid ui components", "session_id", ts.st.ID, "reasons", strings.Join(dropped, "; "))
+		}
+		mode, opts = applyUI(mode, opts, comps)
+		message := strings.TrimSpace(a.Message)
 		ts.mu.Lock()
-		r.recordAsk(ts.st, strings.TrimSpace(a.Message), mode, opts, ts.now)
+		r.recordAskUI(ts.st, message, mode, opts, comps, ts.now)
 		ts.mu.Unlock()
-		return `{"ok":true}`, &TurnOutput{Message: strings.TrimSpace(a.Message), InputMode: mode, Options: opts}
+		return `{"ok":true}`, &TurnOutput{Message: message, InputMode: mode, Options: opts, UI: comps}
 
 	case toolPropose:
 		var a proposeDirectionArgs
@@ -740,8 +756,28 @@ func (r *Runner) missingForDirection(st *session.State) string {
 }
 
 func (r *Runner) recordAsk(st *session.State, message, mode string, opts []session.Option, now time.Time) {
+	r.recordAskUI(st, message, mode, opts, nil, now)
+}
+
+func (r *Runner) recordAskUI(st *session.State, message, mode string, opts []session.Option, comps []ui.Component, now time.Time) {
 	st.Phase = session.PhaseChat
-	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, At: now})
+	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, UI: comps, At: now})
+}
+
+// applyUI derives the turn's options and input mode from the validated
+// components: chips become the options when the model gave none (mode
+// buttons), and a slider makes the turn wait for a control (mode "ui").
+func applyUI(mode string, opts []session.Option, comps []ui.Component) (string, []session.Option) {
+	if c := ui.FindChips(comps); c != nil && len(opts) == 0 {
+		for _, o := range c.Options {
+			opts = append(opts, session.Option{ID: o.ID, Label: o.Label})
+		}
+		mode = "buttons"
+	}
+	if ui.FindSlider(comps) != nil {
+		mode = "ui"
+	}
+	return mode, opts
 }
 
 func applyProfile(p *session.Profile, a updateProfileArgs) {

@@ -11,6 +11,7 @@ import (
 	"stylerag/internal/llm"
 	"stylerag/internal/session"
 	"stylerag/internal/shopping"
+	"stylerag/internal/ui"
 )
 
 // Server-authored questions.
@@ -57,7 +58,7 @@ func looksLikeRefusal(text string) bool {
 // "" means the tool may proceed.
 func (r *Runner) pauseForServerQuestion(ts *turnState) string {
 	if ts.serverAsk == nil {
-		ts.serverAsk = r.serverQuestion(ts.st, ts.now)
+		ts.serverAsk = r.serverQuestion(ts.st, ts.now, ts.storesAtStart)
 	}
 	if ts.serverAsk == nil {
 		return ""
@@ -72,7 +73,7 @@ func (r *Runner) pauseForServerQuestion(ts *turnState) string {
 // serverQuestion returns the question the server must ask before the agent
 // can search or propose, or nil when nothing is missing. Follow-ups after a
 // recommendation are never gated.
-func (r *Runner) serverQuestion(st *session.State, now time.Time) *TurnOutput {
+func (r *Runner) serverQuestion(st *session.State, now time.Time, storesKnown int) *TurnOutput {
 	if st.Recommendation != nil {
 		return nil
 	}
@@ -87,24 +88,30 @@ func (r *Runner) serverQuestion(st *session.State, now time.Time) *TurnOutput {
 			msg = locationRetryQuestion
 		}
 		st.Pending = "location"
-		r.recordServerAsk(st, msg, "voice", nil, now)
-		return &TurnOutput{Message: msg, InputMode: "voice"}
+		comps := []ui.Component{ui.Text(ui.RoleStylist, msg)}
+		r.recordServerAsk(st, msg, "voice", nil, comps, now)
+		return &TurnOutput{Message: msg, InputMode: "voice", UI: comps}
 	}
-	if st.Location != nil && !st.StoreAsked && st.Profile.PreferredStore == nil && len(st.Stores) >= 2 {
+	if st.Location != nil && !st.StoreAsked && st.Profile.PreferredStore == nil && storesKnown >= 2 && len(st.Stores) >= 2 {
 		st.StoreAsked = true
 		st.Pending = "store"
 		opts := storeOptions(st.Stores, storeOptionCount)
-		r.recordServerAsk(st, storeQuestion, "buttons", opts, now)
-		return &TurnOutput{Message: storeQuestion, InputMode: "buttons", Options: opts}
+		chips := make([]ui.Option, 0, len(opts))
+		for _, o := range opts {
+			chips = append(chips, ui.Option{ID: o.ID, Label: o.Label})
+		}
+		comps := []ui.Component{ui.Text(ui.RoleStylist, storeQuestion), ui.Chips("store", true, chips)}
+		r.recordServerAsk(st, storeQuestion, "buttons", opts, comps, now)
+		return &TurnOutput{Message: storeQuestion, InputMode: "buttons", Options: opts, UI: comps}
 	}
 	return nil
 }
 
 // recordServerAsk stores a server question so the app shows it and the model
 // remembers it, without counting it as one of the model's questions.
-func (r *Runner) recordServerAsk(st *session.State, message, mode string, opts []session.Option, now time.Time) {
+func (r *Runner) recordServerAsk(st *session.State, message, mode string, opts []session.Option, comps []ui.Component, now time.Time) {
 	st.Phase = session.PhaseChat
-	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, Server: true, At: now})
+	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", Text: message, InputMode: mode, Options: opts, UI: comps, Server: true, At: now})
 	st.Messages = append(st.Messages, llm.Text(llm.RoleAssistant, "[servidor] "+message))
 }
 
@@ -145,7 +152,7 @@ func brand(name string) string {
 // geocoded and stores are looked up here, so the agent never has to.
 func (r *Runner) resolvePending(ctx context.Context, st *session.State, in TurnInput) string {
 	pending := st.Pending
-	if pending == "" || in.Kind == "system" || in.Kind == "selection" {
+	if pending == "" || in.Kind == "system" || in.Kind == "selection" || in.Kind == "ui" {
 		return ""
 	}
 	st.Pending = ""

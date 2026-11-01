@@ -212,3 +212,61 @@ func TestAnyStoreLeavesNoPreference(t *testing.T) {
 		t.Fatalf("a spoken store name should be matched: %+v / %s", st.Profile.PreferredStore, note)
 	}
 }
+
+func TestServerQuestionsCarryUI(t *testing.T) {
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("p1", toolPropose, proposal())),
+		calls(call("p2", toolPropose, proposal())),
+	}}
+	r := NewRunner(model, Deps{Shopping: shopping.Fake{}, RequirePreview: true}, 5, 6)
+	st := newState()
+	st.Location = nil
+	st.Profile.Occasion, st.Profile.BudgetMXN = "boda", 2000
+	ctx := context.Background()
+
+	out, err := r.RunTurn(ctx, st, TurnInput{Kind: "text", Text: "una boda"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.UI) != 1 || out.UI[0].Type != "text" || out.UI[0].Role != "stylist" || out.UI[0].Text != out.Message {
+		t.Fatalf("location question ui: %+v", out.UI)
+	}
+	if last := st.Transcript[len(st.Transcript)-1]; len(last.UI) != 1 {
+		t.Errorf("server question ui must be recorded: %+v", last)
+	}
+
+	out, err = r.RunTurn(ctx, st, TurnInput{Kind: "voice", Text: "Roma Norte, Ciudad de México"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.InputMode != "buttons" || len(out.UI) != 2 || out.UI[0].Type != "text" {
+		t.Fatalf("store question ui: %+v", out)
+	}
+	chips := out.UI[1]
+	if chips.Type != "chips" || chips.ID != "store" || len(chips.Options) != len(out.Options) || chips.Options[len(chips.Options)-1].ID != anyStoreOptionID {
+		t.Fatalf("store chips must mirror the options: %+v", chips)
+	}
+	for i, o := range out.Options {
+		if chips.Options[i].ID != o.ID || chips.Options[i].Label != o.Label {
+			t.Errorf("chip %d differs from option: %+v vs %+v", i, chips.Options[i], o)
+		}
+	}
+}
+
+func TestUIInputIsReportedToTheModelAndSkipsPending(t *testing.T) {
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("a1", toolAskUser, map[string]any{"message": "¿Y el envío?", "input_mode": "voice"})),
+	}}
+	r := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 5, 6)
+	st := newState()
+	st.Pending = "location"
+	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "ui", Text: "Presupuesto: 2500 MXN"}); err != nil {
+		t.Fatal(err)
+	}
+	if st.Messages[0].Content != "[ui] Presupuesto: 2500 MXN" || st.Transcript[0].InputMode != "ui" {
+		t.Errorf("messages/transcript: %+v %+v", st.Messages[0], st.Transcript[0])
+	}
+	if st.Pending != "location" || st.Location == nil {
+		t.Errorf("a slider must not consume a pending server question: pending=%q", st.Pending)
+	}
+}

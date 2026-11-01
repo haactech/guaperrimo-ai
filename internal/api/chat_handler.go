@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
 	"stylerag/internal/tryon"
+	"stylerag/internal/ui"
 	"stylerag/internal/vision"
 )
 
@@ -120,6 +123,15 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			return
 		}
 
+		if input.Kind == "ui" {
+			text, err := applyUIAction(st, req)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			input.Text = text
+		}
+
 		<-storesDone
 		st.AddStores(stores)
 		if input.Kind == "button" {
@@ -165,7 +177,7 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 			"session_id", sessionID, "turn", st.Turn, "phase", st.Phase,
 			"steps", out.Steps, "tools", strings.Join(out.ToolsUsed, ","), "final", out.IsFinal)
 
-		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.IsFinal)
+		resp := buildChatResponse(st, out.Message, out.InputMode, out.Options, out.UI, out.IsFinal)
 		resp.LooksGenerating = looksGenerating
 		resp.MatrixAvailable = st.Matrix != nil
 		writeJSON(w, http.StatusOK, resp)
@@ -189,7 +201,7 @@ func recommendationHandler(store session.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "no recommendation yet")
 			return
 		}
-		resp := buildChatResponse(st, st.Recommendation.Summary, "none", nil, true)
+		resp := buildChatResponse(st, st.Recommendation.Summary, "none", nil, nil, true)
 		resp.LooksGenerating = len(st.Looks) > 0 && !allLooksDone(st)
 		writeJSON(w, http.StatusOK, resp)
 	}
@@ -214,13 +226,21 @@ func turnInput(req ChatRequest) (agent.TurnInput, error) {
 			return agent.TurnInput{}, fmt.Errorf("missing field: text")
 		}
 		return agent.TurnInput{Kind: "text", Text: req.Text}, nil
+	case "ui_action":
+		if strings.TrimSpace(req.ComponentID) == "" {
+			return agent.TurnInput{}, fmt.Errorf("missing field: component_id")
+		}
+		if strings.TrimSpace(req.Value) == "" {
+			return agent.TurnInput{}, fmt.Errorf("missing field: value")
+		}
+		return agent.TurnInput{Kind: "ui", Text: req.Value}, nil // text is completed from the component
 	case "idea_selection":
 		if len(req.SelectedIdeas) == 0 && strings.TrimSpace(req.Text) == "" {
 			return agent.TurnInput{}, fmt.Errorf("idea_selection needs selected_ideas or text")
 		}
 		return agent.TurnInput{Kind: "selection", Selected: req.SelectedIdeas, Feedback: req.Text}, nil
 	default:
-		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response, text or idea_selection")
+		return agent.TurnInput{}, fmt.Errorf("type must be image, button_response, voice_response, text, idea_selection or ui_action")
 	}
 }
 
@@ -267,10 +287,49 @@ func applyTurnContext(st *session.State, req ChatRequest) {
 	}
 }
 
+// applyUIAction resolves a slider action against the components of the last
+// assistant turn. When the slider is bound to a profile field the value is
+// written to the profile right here, so it never depends on the model. It
+// returns the text the agent sees after "[ui] ".
+func applyUIAction(st *session.State, req ChatRequest) (string, error) {
+	c := ui.FindByID(st.LastAssistantUI(), strings.TrimSpace(req.ComponentID))
+	if c == nil || c.Type != ui.TypeSlider {
+		return "", fmt.Errorf("unknown component_id: %s", req.ComponentID)
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(req.Value), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return "", fmt.Errorf("value must be a number")
+	}
+	v = math.Min(math.Max(v, c.Min), c.Max)
+	switch c.ProfileField {
+	case ui.FieldBudgetMXN:
+		st.Profile.BudgetMXN = v
+	case ui.FieldRadiusM:
+		st.Profile.RadiusM = int(math.Round(v))
+	}
+	label := c.Label
+	if label == "" {
+		label = c.ID
+	}
+	text := label + ": " + strconv.FormatFloat(v, 'f', -1, 64)
+	if c.Unit != "" {
+		text += " " + c.Unit
+	}
+	return text, nil
+}
+
 func optionLabel(st *session.State, optionID string) string {
 	for _, o := range st.LastAssistantOptions() {
 		if o.ID == optionID {
 			return o.Label
+		}
+	}
+	// A chip the model did not repeat in options still resolves.
+	if c := ui.FindChips(st.LastAssistantUI()); c != nil {
+		for _, o := range c.Options {
+			if o.ID == optionID {
+				return o.Label
+			}
 		}
 	}
 	return optionID
@@ -312,13 +371,16 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 	return err
 }
 
-func buildChatResponse(st *session.State, message, inputMode string, options []session.Option, isFinal bool) *ChatResponse {
+func buildChatResponse(st *session.State, message, inputMode string, options []session.Option, components []ui.Component, isFinal bool) *ChatResponse {
 	resp := &ChatResponse{
 		SessionID:     st.ID,
 		Phase:         string(st.Phase),
 		Turn:          st.Turn,
 		Message:       message,
 		InputMode:     inputMode,
+		UIVersion:     ui.Version,
+		Speech:        message,
+		UI:            components,
 		Options:       []ChatOption{},
 		IsFinal:       isFinal,
 		LocationKnown: st.Location != nil,
@@ -333,6 +395,7 @@ func buildChatResponse(st *session.State, message, inputMode string, options []s
 		return resp
 	}
 	rec := st.Recommendation
+	resp.UI = composeFinalUI(st) // by code, whatever the model attached
 	resp.TotalMXN = rec.TotalMXN
 	seen := map[string]bool{}
 	for _, a := range rec.PriorityActions {

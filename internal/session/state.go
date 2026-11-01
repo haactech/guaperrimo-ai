@@ -7,6 +7,7 @@ import (
 
 	"stylerag/internal/llm"
 	"stylerag/internal/shopping"
+	"stylerag/internal/ui"
 	"stylerag/internal/vision"
 )
 
@@ -53,12 +54,13 @@ type Option struct {
 
 // Turn is one user-visible exchange (not the raw LLM traffic).
 type Turn struct {
-	Role      string    `json:"role"` // "user" | "assistant"
-	Text      string    `json:"text"`
-	InputMode string    `json:"input_mode,omitempty"` // assistant: buttons|voice|none; user: button|voice|text
-	Options   []Option  `json:"options,omitempty"`
-	Server    bool      `json:"server,omitempty"` // asked by the server itself, not by the model
-	At        time.Time `json:"at"`
+	Role      string         `json:"role"` // "user" | "assistant"
+	Text      string         `json:"text"`
+	InputMode string         `json:"input_mode,omitempty"` // assistant: buttons|voice|ui|none; user: button|voice|text|ui
+	Options   []Option       `json:"options,omitempty"`
+	UI        []ui.Component `json:"ui,omitempty"`     // assistant: components shown next to the message
+	Server    bool           `json:"server,omitempty"` // asked by the server itself, not by the model
+	At        time.Time      `json:"at"`
 }
 
 // PriorityAction is one concrete improvement, shown as a card in the app.
@@ -245,11 +247,21 @@ func (s *State) LastAssistantOptions() []Option {
 	return nil
 }
 
+// LastAssistantUI returns the components shown in the latest assistant turn.
+func (s *State) LastAssistantUI() []ui.Component {
+	for i := len(s.Transcript) - 1; i >= 0; i-- {
+		if s.Transcript[i].Role == "assistant" {
+			return s.Transcript[i].UI
+		}
+	}
+	return nil
+}
+
 // QuestionsAsked counts assistant turns that waited for user input.
 func (s *State) QuestionsAsked() int {
 	n := 0
 	for _, t := range s.Transcript {
-		if t.Role == "assistant" && !t.Server && (t.InputMode == "buttons" || t.InputMode == "voice") {
+		if t.Role == "assistant" && !t.Server && (t.InputMode == "buttons" || t.InputMode == "voice" || t.InputMode == "ui") {
 			n++
 		}
 	}
