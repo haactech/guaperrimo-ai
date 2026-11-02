@@ -107,13 +107,13 @@ func (r *Runner) findBranches(ctx context.Context, ts *turnState, products []sho
 		wg.Add(1)
 		go func(i int, merchant string) {
 			defer wg.Done()
-			stores, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: brand(merchant), Lat: loc.Lat, Lng: loc.Lng, RadiusM: branchRadiusM, Limit: 3})
+			stores, err := r.Deps.Shopping.FindStores(ctx, shopping.StoreQuery{Query: brand(merchant), Lat: loc.Lat, Lng: loc.Lng, RadiusM: branchRadiusM, Limit: 6})
 			if err != nil {
 				slog.WarnContext(ctx, "agent: branch lookup failed", "session_id", st.ID, "merchant", merchant, "error", err)
 				return
 			}
 			for _, s := range stores {
-				if shopping.StoreMatches(merchant, s.Name) && s.DistanceM <= branchRadiusM {
+				if shopping.IsBranchOf(merchant, s.Name) && shopping.IsRetailStore(s) && s.DistanceM <= branchRadiusM {
 					found[i] = append(found[i], s)
 				}
 			}
