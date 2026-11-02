@@ -83,3 +83,28 @@ func AnnotateNearby(products []Product, stores []Store) {
 		products[i].NearbyStore = MatchNearbyStore(products[i].Store, stores)
 	}
 }
+
+// MerchantKey is the normalised merchant name used to match stores
+// ("H&M México" → "hm", "Liverpool" → "liverpool").
+func MerchantKey(merchant string) string { return normalizeMerchant(merchant) }
+
+// onlineOnly are merchants without walk-in stores in Mexico: looking for a
+// nearby branch would only waste a Maps search.
+var onlineOnly = []string{"amazon", "mercadolibre", "shein", "temu", "aliexpress", "ebay", "etsy", "wish", "linio", "claroshop", "dafiti", "farfetch", "asos"}
+
+// OnlineOnly reports whether the merchant sells only online.
+func OnlineOnly(merchant string) bool {
+	k := MerchantKey(merchant)
+	for _, o := range onlineOnly {
+		if strings.Contains(k, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// StoreMatches reports whether a store name belongs to the merchant.
+func StoreMatches(merchant, storeName string) bool {
+	m, n := MerchantKey(merchant), normalizeName(storeName)
+	return len(m) >= 2 && n != "" && (strings.Contains(n, m) || (len(n) >= 3 && strings.Contains(m, n)))
+}

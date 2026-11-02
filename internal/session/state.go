@@ -167,6 +167,9 @@ type State struct {
 	Pending      string `json:"pending,omitempty"`
 	LocationAsks int    `json:"location_asks,omitempty"` // server-side location questions so far
 	StoreAsked   bool   `json:"store_asked,omitempty"`
+	// BranchLookups are the merchants whose nearest branch was already
+	// searched on the map (found or not), so each is looked up once.
+	BranchLookups map[string]bool `json:"branch_lookups,omitempty"`
 
 	Messages   []llm.Message               `json:"messages"`   // agent memory (user/assistant/tool)
 	Transcript []Turn                      `json:"transcript"` // what the user saw

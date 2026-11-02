@@ -512,6 +512,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			}
 		}
 		products = pesos
+		r.findBranches(ctx, ts, products)
 		ts.mu.Lock()
 		shopping.AnnotateNearby(products, ts.st.Stores)
 		ts.st.AddProducts(products)
@@ -575,6 +576,13 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return paused, ask
 		}
 		r.attachReferences(ctx, d)
+		var refs []shopping.Product
+		for _, idea := range d.Ideas {
+			if idea.Reference != nil {
+				refs = append(refs, *idea.Reference)
+			}
+		}
+		r.findBranches(ctx, ts, refs)
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
 		// References are real listings: keep them so the agent can recommend
