@@ -19,6 +19,7 @@ import (
 	"stylerag/internal/storage"
 	"stylerag/internal/telemetry"
 	"stylerag/internal/tryon"
+	"stylerag/internal/tts"
 	"stylerag/internal/vision"
 )
 
@@ -151,7 +152,15 @@ func main() {
 		slog.InfoContext(ctx, "vton enabled", "provider", provider.Name(), "whole_outfits", renderer.Outfits(), "complete_looks", completeLooks, "max_per_session", cfg.TryOnMaxPerSession, "max_per_day", cfg.TryOnMaxPerDay, "auto_looks", cfg.TryOnAutoLooks, "product_details", details != nil)
 	}
 
-	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, Matrix: matrixDeps, Signed: images})
+	var ttsDeps *api.TTSDeps
+	if cfg.ElevenLabsAPIKey != "" && cfg.ElevenLabsVoiceID != "" {
+		ttsDeps = &api.TTSDeps{Speaker: &tts.ElevenLabs{APIKey: cfg.ElevenLabsAPIKey, VoiceID: cfg.ElevenLabsVoiceID, Model: cfg.ElevenLabsModel}, Timeout: 30 * time.Second}
+		slog.InfoContext(ctx, "tts enabled", "provider", "elevenlabs", "model", cfg.ElevenLabsModel)
+	} else {
+		slog.WarnContext(ctx, "tts disabled", "reason", "ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not set; the app uses the iPhone voice")
+	}
+
+	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, TTS: ttsDeps, Matrix: matrixDeps, Signed: images})
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

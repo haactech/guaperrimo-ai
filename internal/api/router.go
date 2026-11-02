@@ -19,6 +19,7 @@ type Deps struct {
 	Store  session.Store
 	Chat   *ChatDeps
 	TryOn  *TryOnDeps          // nil = disabled
+	TTS    *TTSDeps            // nil = no server-side voice
 	Matrix *MatrixDeps         // Renderer may be nil
 	Signed *storage.SignedURLs // nil = no image proxy
 }
@@ -35,6 +36,9 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST /session/{id}/chat", chatHandler(d.Chat))
 	mux.HandleFunc("GET /session/{id}/recommendation", recommendationHandler(d.Store))
 	mux.HandleFunc("GET /session/{id}/looks", looksHandler(d.Store))
+	if d.TTS != nil {
+		mux.HandleFunc("POST /tts", ttsHandler(d.TTS))
+	}
 	if d.TryOn != nil {
 		mux.HandleFunc("POST /session/{id}/tryon", tryonHandler(d.TryOn))
 	}

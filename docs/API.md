@@ -381,3 +381,18 @@ Guardan la combinación elegida con su explicación para ir de compras.
 `items[].product` incluye `link` al comercio y `availability` cuando el
 servidor resolvió el detalle del producto, y `nearby_store` si hay sucursal
 cerca. Guardar la misma combinación dos veces la reemplaza.
+
+## `POST /tts`
+
+La voz del estilista. La llave de ElevenLabs vive solo en el servidor
+(`ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`); sin ellas la ruta no existe y
+la app usa la voz del iPhone.
+
+```json
+{"text": "¿Para qué ocasión quieres verte bien?"}
+```
+
+Responde `200` con `audio/mpeg`. `400` sin texto o con más de 1,200
+caracteres, `502` si ElevenLabs falla (la app cae a la voz del iPhone). Los
+últimos 64 textos quedan en memoria, así que repetir un mensaje no se cobra
+dos veces.
