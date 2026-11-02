@@ -389,8 +389,26 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
 		ts.mu.Lock()
+		// Before the user has answered anything, the occasion and budget can
+		// only be guesses from the photo; recording them made the server
+		// think they were known and skip the question's controls.
+		var ignored []string
+		if !userHasAnswered(ts.st) {
+			if strings.TrimSpace(a.Occasion) != "" {
+				a.Occasion, a.EventDate = "", ""
+				ignored = append(ignored, "ocasión")
+			}
+			if a.BudgetMXN > 0 {
+				a.BudgetMXN = 0
+				ignored = append(ignored, "presupuesto")
+			}
+		}
 		applyProfile(&ts.st.Profile, a)
-		res := toJSON(map[string]any{"ok": true, "profile": ts.st.Profile})
+		body := map[string]any{"ok": true, "profile": ts.st.Profile}
+		if len(ignored) > 0 {
+			body["ignorado"] = "el usuario aún no ha dicho su " + strings.Join(ignored, " ni su ") + "; pregúntale, no lo supongas por la foto"
+		}
+		res := toJSON(body)
 		ts.mu.Unlock()
 		return res, nil
 

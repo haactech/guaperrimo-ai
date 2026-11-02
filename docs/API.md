@@ -51,47 +51,19 @@ Esta pregunta no cuenta para el límite de preguntas del agente. Enviar `locatio
 
 ### Primeros turnos guiados
 
-Antes del preview el estilista solo necesita la ocasión y el presupuesto, y el usuario los da tocando, no hablando. El servidor completa por su cuenta los `ui` de las preguntas del modelo (antes del preview):
+Antes del preview el estilista solo necesita la ocasión y el presupuesto, y el usuario los da en **una sola pantalla**, tocando o hablando. El servidor completa por su cuenta los `ui` de las preguntas del modelo (solo con `AGENT_PREVIEW=true`):
 
-1. **Primera pregunta:** `text` (la pregunta), `text` con `role: "heading"` "Tu colorimetría: Otoño profundo", `palette` (6 colores que le favorecen, 2-3 a evitar y `note` con qué significa) y, mientras no se sepa la ocasión, `chips` con `id: "occasion"` (Boda de día, Boda de noche, Entrevista de trabajo, Una cita, Junta o evento de trabajo, Verme mejor a diario; `allow_voice: true`). La paleta sale de la estación de color del análisis de la foto, no del modelo; si el análisis no trae estación, no hay paleta.
-2. **Segunda pregunta:** `slider` `id: "budget"` (500-10,000 MXN, paso 250, `profile_field: "budget_mxn"`).
+1. **Primera pregunta:** `text` (la pregunta), `text` `heading` "Tu colorimetría: Otoño profundo" y `palette` (6 colores que le favorecen, 2-3 a evitar y `note` con qué significa; sale de la estación de color del análisis de la foto, no del modelo), luego `chips` `id: "occasion"` (`allow_voice: true`) y `slider` `id: "budget"` (500-10,000 MXN, paso 250, `profile_field: "budget_mxn"`). `input_mode: "ui"`.
+2. La app confirma las dos respuestas juntas con `{"type":"ui_action","values":{"occasion":"boda_dia","budget":"3500"}}`. El servidor guarda ocasión y presupuesto en el perfil sin depender del modelo, y el agente lee "[ui] Ocasión: Boda de día. Presupuesto total: 3500 MXN". También se puede contestar por voz.
 3. Con ocasión y presupuesto, el agente propone el preview.
 
-El servidor decide el control de cada paso: mientras la ocasión es desconocida no hay slider, y después no hay chips. Si el modelo manda sus propios chips (o botones en `options`) mientras la ocasión es desconocida, se usan como chips de ocasión con `id: "occasion"`. Si la pregunta del modelo habla de otra cosa, el servidor agrega arriba del control un `text` `heading` con la pregunta correcta ("¿Para qué ocasión?", "¿Cuánto quieres invertir en total?"). Esto aplica solo con `AGENT_PREVIEW=true`.
+Reglas:
+- Un control aparece mientras su respuesta no se sabe **o** cuando la pregunta la pide (ocasión: "ocasión", "para qué", "evento"…; presupuesto: "presupuesto", "invertir", "gastar", "cuánto"…). Si la pregunta no menciona un control, el servidor pone arriba de él un `heading` ("¿Para qué ocasión?", "¿Cuánto quieres invertir en total?").
+- Si solo falta una respuesta, solo aparece su control. Los botones o chips que mande el modelo se usan como opciones de ocasión.
+- Antes de la primera respuesta del usuario, el servidor ignora la ocasión y el presupuesto que el modelo quiera guardar con `update_profile`: serían suposiciones a partir de la foto.
+- `ui_action` sigue aceptando un solo control (`component_id` + `value`).
 
-En todos los turnos con `ui`, el primer componente es la pregunta (`text` `stylist`): la app muestra solo los componentes, así que un slider o unos chips nunca llegan sin su pregunta. Tocar un chip de ocasión guarda la ocasión en el perfil sin depender del modelo, igual que el slider guarda el presupuesto.
-
-Response:
-
-```json
-{
-  "session_id": "…",
-  "phase": "chat | preview | done",
-  "turn": 2,
-  "message": "texto para TTS",
-  "input_mode": "buttons | voice | ui | preview | none",
-  "options": [{"id": "boda", "label": "Boda de día"}],
-  "ui_version": 1,
-  "speech": "texto que la app lee en voz alta (hoy igual a message)",
-  "ui": [Component],
-  "is_final": false,
-  "location_known": true,
-  "priority_actions": [{"id": "camisa_lino", "title": "…", "description": "…", "impact": "alto", "effort": "bajo", "product_ids": ["p_…"]}],
-  "shopping_list": [{"slot": "upper_body", "description": "…", "why": "…", "priority": 1, "products": [Product]}],
-  "products": [Product],
-  "stores": [Store],
-  "total_mxn": 1448,
-  "looks_generating": true
-}
-```
-
-`priority_actions`, `shopping_list`, `products`, `stores` y `total_mxn` solo
-aparecen cuando `is_final` es `true`. Después de una recomendación el usuario
-puede seguir hablando; el agente ajusta y puede volver a entregar `is_final`.
-
-Errores: `400` cuerpo o id inválido (en `ui_action`, también falta de `component_id` o `value`, un `component_id` que no es un slider del último turno del asistente o un `value` que no es número), `404` sesión inexistente, `409` turno de
-imagen repetido, turno sin foto o `idea_selection` sin preview pendiente,
-`502` fallo del modelo o del análisis, `504` timeout del turno.
+Eval con el modelo real (sin SerpAPI ni imágenes): `AGENT_EVAL=1 go test ./internal/agent -run TestEvalFirstQuestions -v` (`AGENT_EVAL_RUNS=5` para más corridas).
 
 ### UI generativa (`ui_version` 1)
 

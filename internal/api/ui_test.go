@@ -3,9 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	"stylerag/internal/agent"
 	"stylerag/internal/llm"
+	"stylerag/internal/session"
+	"stylerag/internal/shopping"
 )
 
 func TestChatResponseCarriesUIFromAskUser(t *testing.T) {
@@ -132,5 +137,64 @@ func TestUIActionAppliesProfileFieldDeterministically(t *testing.T) {
 	st, _ = store.Get(context.Background(), "sess_ui_002")
 	if st.Profile.RadiusM != 3000 || st.Profile.BudgetMXN != 2700 {
 		t.Errorf("profile after radius: %+v", st.Profile)
+	}
+}
+
+func TestOneScreenAnswersOccasionAndBudgetTogether(t *testing.T) {
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("a1", "ask_user", map[string]any{"message": "¿Para qué ocasión quieres verte bien?", "input_mode": "voice"})),
+		calls(call("a2", "ask_user", map[string]any{"message": "Listo, ¿algo que no te guste usar?", "input_mode": "voice"})),
+	}}
+	store := session.NewMemoryStore(time.Hour)
+	t.Cleanup(store.Stop)
+	images := &memImages{}
+	runner := agent.NewRunner(model, agent.Deps{Shopping: shopping.Fake{}, MinSearchTime: time.Second, RequirePreview: true}, 8, 4)
+	srv := httptest.NewServer(NewRouter(Deps{Images: images, Store: store,
+		Chat: &ChatDeps{Store: store, Images: images, Analyzer: fakeAnalyzer{}, Runner: runner, TurnTimeout: 10 * time.Second}}))
+	t.Cleanup(srv.Close)
+	base := srv.URL + "/session/sess_ui_003"
+	uploadImage(t, base+"/image")
+
+	code, body := postJSON(t, base+"/chat", map[string]any{"type": "image", "location": map[string]any{"lat": 19.4194, "lng": -99.1616}}, nil)
+	if code != 200 || body["input_mode"] != "ui" {
+		t.Fatalf("first screen: %d %v", code, body)
+	}
+	var hasChips, hasSlider bool
+	for _, c := range body["ui"].([]any) {
+		switch c.(map[string]any)["type"] {
+		case "chips":
+			hasChips = true
+		case "slider":
+			hasSlider = true
+		}
+	}
+	if !hasChips || !hasSlider {
+		t.Fatalf("occasion chips and budget slider on one screen: %v", body["ui"])
+	}
+
+	for _, bad := range []map[string]any{
+		{"type": "ui_action", "values": map[string]string{"occasion": "nope", "budget": "3500"}},
+		{"type": "ui_action", "values": map[string]string{"color": "x"}},
+		{"type": "ui_action", "values": map[string]string{"occasion": "boda_dia", "budget": "mucho"}},
+	} {
+		if code, _ := postJSON(t, base+"/chat", bad, nil); code != 400 {
+			t.Errorf("%v → %d, want 400", bad, code)
+		}
+	}
+
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "ui_action", "values": map[string]string{"occasion": "boda_dia", "budget": "3500"}}, nil)
+	if code != 200 {
+		t.Fatalf("%d %v", code, body)
+	}
+	st, _ := store.Get(context.Background(), "sess_ui_003")
+	if st.Profile.Occasion != "Boda de día" || st.Profile.BudgetMXN != 3500 {
+		t.Fatalf("both answers must reach the profile: %+v", st.Profile)
+	}
+	user := st.Transcript[len(st.Transcript)-2]
+	if user.Role != "user" || user.Text != "Ocasión: Boda de día. Presupuesto total: 3500 MXN" {
+		t.Fatalf("the agent must read both answers: %+v", user)
+	}
+	if body["ui"] != nil {
+		t.Errorf("with both answers no guided control is left: %v", body["ui"])
 	}
 }
