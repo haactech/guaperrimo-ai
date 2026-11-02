@@ -41,11 +41,6 @@ TU ENTREGABLE FINAL (herramienta finish_recommendation):
 	default:
 		sb.WriteString("- Ubicación: DESCONOCIDA. No la preguntes tú: el servidor se la pide al usuario cuando hace falta. Si él la menciona por su cuenta, llama set_location.\n")
 	}
-	if ps := st.Profile.PreferredStore; ps != nil {
-		sb.WriteString(fmt.Sprintf("- Tienda preferida: %s (%d m). Dirige search_products con store=%q primero y prioriza productos con nearby_store ahí.\n", ps.Name, ps.DistanceM, brand(ps.Name)))
-	} else if st.StoreAsked {
-		sb.WriteString("- Tienda preferida: ninguna; usa las tiendas cercanas encontradas.\n")
-	}
 	p := st.Profile
 	sb.WriteString(fmt.Sprintf("- Ocasión: %s\n", orUnknown(p.Occasion)))
 	sb.WriteString(fmt.Sprintf("- Fecha del evento: %s\n", orUnknown(p.EventDate)))
@@ -98,6 +93,8 @@ TU ENTREGABLE FINAL (herramienta finish_recommendation):
 - Un mensaje que empieza con [ui] es el valor que el usuario fijó en un control de la pantalla (por ejemplo un deslizador de presupuesto). El servidor ya lo guardó en el perfil: no lo vuelvas a preguntar ni a confirmar, sigue con lo siguiente.
 - Cada vez que aprendas algo (ocasión, fecha, presupuesto, zona, envío, restricciones), regístralo con update_profile ANTES de responder.
 
+PRIMERAS PREGUNTAS: el servidor pone la pantalla. En tu primera pregunta agrega por su cuenta la paleta de su colorimetría y botones de ocasión; mientras no sepas el presupuesto, agrega un deslizador. Tú solo escribe la pregunta, corta: primero la ocasión, después el presupuesto, una por turno. En la primera, di en una frase qué le favorece según su colorimetría (sin listar colores: ya los ve) y pregunta la ocasión. Con ocasión y presupuesto, ve directo a la dirección de estilo.
+
 COMPONENTES VISUALES (parámetro opcional ui de ask_user, máximo 6):
 - chips: para 2-4 opciones concretas; repite las mismas de options (id y label). Ej. {"type":"chips","id":"ocasion","options":[{"id":"boda","label":"Boda"},{"id":"cita","label":"Cita"}]}.
 - slider: para el presupuesto, en lugar de pedir la cifra por voz: {"type":"slider","id":"budget","label":"Presupuesto","min":500,"max":10000,"step":100,"default":2500,"unit":"MXN","profile_field":"budget_mxn"}. El usuario lo mueve y confirma; llega como mensaje [ui].
@@ -109,7 +106,7 @@ COMPONENTES VISUALES (parámetro opcional ui de ask_user, máximo 6):
 ANTES DE TERMINAR NECESITAS SABER:
 1. La ocasión o momento (evento próximo con fecha aproximada, o día a día).
 2. Presupuesto aproximado en pesos para toda la compra.
-3. Si acepta compras en línea con envío. (La ubicación y la tienda preferida las pregunta el servidor; tú no las preguntes.)
+No preguntes si acepta envío ni a qué tienda quiere ir: recomienda en tiendas cercanas y en línea, y cada prenda dice dónde está. La ubicación la pregunta el servidor; tú no la preguntes.
 
 FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 `)
@@ -128,7 +125,7 @@ FLUJO DE HERRAMIENTAS PARA LA RECOMENDACIÓN:
 `)
 	sb.WriteString(fmt.Sprintf(`   Presupuesto de búsquedas: máximo %d por turno y cada una tarda varios segundos. Pide TODAS las búsquedas de un look en la misma respuesta para que corran en paralelo. Una búsqueda por prenda; repite solo si no hubo resultados útiles.
 `, r.Deps.MaxSearchesPerTurn))
-	sb.WriteString(`3. Prefiere productos con nearby_store. Si no hay, usa productos con envío solo si el usuario aceptó envío.
+	sb.WriteString(`3. Prefiere productos con nearby_store. Si no hay, usa productos con envío a domicilio.
    Si una búsqueda devuelve 0 resultados, simplifica la query (quita store, color o corte) y reintenta UNA vez. Si sigue vacía, incluye el artículo en shopping_list con product_ids vacío y explica en qué tienda cercana buscarlo. No inventes ids ni incluyas prendas que el usuario ya tiene.
 4. La suma del producto principal de cada artículo de la lista NO puede superar el presupuesto. Si se pasa, busca alternativas más baratas o quita artículos.
 5. Slots: camisa, playera, polo o suéter = upper_body; saco, blazer o chamarra = outerwear; pantalón = lower_body; cinturón, reloj o lentes = accessory. Las filas del probador se arman por slot, así que no mezcles sacos con camisas en el mismo slot.

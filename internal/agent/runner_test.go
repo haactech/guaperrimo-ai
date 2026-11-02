@@ -341,11 +341,12 @@ func TestAskUserWithUIComponents(t *testing.T) {
 		if out.InputMode != "buttons" || len(out.Options) != 2 || out.Options[0].ID != "boda" || out.Options[1].Label != "Cita" {
 			t.Fatalf("options not derived: %+v", out)
 		}
-		if len(out.UI) != 1 || out.UI[0].Type != "chips" {
+		// The question goes first so the app shows it above the chips.
+		if len(out.UI) != 2 || out.UI[0].Type != "text" || out.UI[0].Text != "¿Para qué ocasión?" || out.UI[1].Type != "chips" {
 			t.Fatalf("invalid component must be dropped: %+v", out.UI)
 		}
 		last := st.Transcript[len(st.Transcript)-1]
-		if len(last.UI) != 1 || last.InputMode != "buttons" || len(last.Options) != 2 {
+		if len(last.UI) != 2 || last.InputMode != "buttons" || len(last.Options) != 2 {
 			t.Errorf("turn not recorded with its ui: %+v", last)
 		}
 	})
@@ -358,7 +359,7 @@ func TestAskUserWithUIComponents(t *testing.T) {
 	})
 	t.Run("slider means ui mode", func(t *testing.T) {
 		out, st := askWith(map[string]any{"message": "¿Cuánto quieres gastar?", "input_mode": "voice", "ui": []any{slider}})
-		if out.InputMode != "ui" || len(out.Options) != 0 || out.UI[0].ProfileField != "budget_mxn" {
+		if out.InputMode != "ui" || len(out.Options) != 0 || out.UI[1].ProfileField != "budget_mxn" {
 			t.Fatalf("%+v", out)
 		}
 		if st.QuestionsAsked() != 1 {
@@ -366,7 +367,14 @@ func TestAskUserWithUIComponents(t *testing.T) {
 		}
 	})
 	t.Run("all invalid keeps the plain question", func(t *testing.T) {
-		out, _ := askWith(map[string]any{"message": "¿Y?", "input_mode": "voice", "ui": []any{map[string]any{"type": "chips", "id": "a"}}})
+		// Occasion and budget known: no guided control is added either.
+		model := &scripted{responses: []*llm.CompletionResponse{calls(call("a1", toolAskUser, map[string]any{"message": "¿Y?", "input_mode": "voice", "ui": []any{map[string]any{"type": "chips", "id": "a"}}}))}}
+		st := newState()
+		st.Profile.Occasion, st.Profile.BudgetMXN = "boda", 2000
+		out, err := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 5, 4).RunTurn(context.Background(), st, TurnInput{Kind: "voice", Text: "hola"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if out.InputMode != "voice" || len(out.UI) != 0 {
 			t.Fatalf("%+v", out)
 		}

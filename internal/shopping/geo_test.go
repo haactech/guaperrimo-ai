@@ -52,3 +52,49 @@ func TestFakeDirectedSearchReturnsOnlyThatMerchant(t *testing.T) {
 		t.Fatalf("undirected search should return every merchant, got %d", len(all))
 	}
 }
+
+func TestIsRetailStoreSkipsServicesAndOffices(t *testing.T) {
+	for _, c := range []struct {
+		s    Store
+		want bool
+	}{
+		{Store{Name: "Liverpool Insurgentes", Category: "Tienda departamental"}, true},
+		{Store{Name: "H&M", Category: "Tienda de ropa"}, true},
+		{Store{Name: "Lefties", Category: ""}, true},
+		{Store{Name: "Walmart Supercenter", Category: "Tienda de autoservicio"}, true},
+		{Store{Name: "Sears Insurgentes", Category: "Grandes almacenes"}, true},
+		{Store{Name: "Sears Car service", Category: "Tienda de accesorios para auto"}, false},
+		{Store{Name: "Liverpool", Category: "Centro comercial"}, true},
+		{Store{Name: "Studio H&M", Category: "Centro de estética"}, false},
+		{Store{Name: "Sears Car service", Category: "Taller de reparación de automóviles"}, false},
+		{Store{Name: "Sede Liverpool - Roma Norte", Category: "Oficinas corporativas"}, false},
+		{Store{Name: "Coppel", Category: "Banco"}, false},
+		{Store{Name: "Liverpool Óptica", Category: "Óptica"}, false},
+		{Store{Name: "Papeleria liverpool", Category: "Papelería"}, false},
+		{Store{Name: "HM Distribuidores", Category: "Distribuidor mayorista"}, false},
+	} {
+		if got := IsRetailStore(c.s); got != c.want {
+			t.Errorf("IsRetailStore(%q / %q) = %v, want %v", c.s.Name, c.s.Category, got, c.want)
+		}
+	}
+}
+
+func TestIsBranchOfNeedsTheNameToStartWithTheBrand(t *testing.T) {
+	for _, c := range []struct {
+		merchant, name string
+		want           bool
+	}{
+		{"Liverpool", "Liverpool Insurgentes", true},
+		{"Liverpool", "Papeleria liverpool", false},
+		{"H&M México", "H&M Reforma", true},
+		{"H&M", "H & M Parque Delta", true},
+		{"Zara MX", "Zara", true},
+		{"Lefties", "Lefties Plaza Universidad", true},
+		{"Sears México", "Sears Car service", true}, // name ok; IsRetailStore drops it
+		{"Liverpool", "Liv", false},
+	} {
+		if got := IsBranchOf(c.merchant, c.name); got != c.want {
+			t.Errorf("IsBranchOf(%q, %q) = %v, want %v", c.merchant, c.name, got, c.want)
+		}
+	}
+}

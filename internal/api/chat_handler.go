@@ -136,6 +136,7 @@ func chatHandler(deps *ChatDeps) http.HandlerFunc {
 		st.AddStores(stores)
 		if input.Kind == "button" {
 			input.Text = optionLabel(st, req.OptionID)
+			agent.OccasionFromChip(st, req.OptionID)
 		}
 
 		out, err := deps.Runner.RunTurn(ctx, st, input)
@@ -356,6 +357,7 @@ func persist(ctx context.Context, store session.Store, st *session.State, isNew,
 		cur.Transcript = st.Transcript
 		cur.Products = st.Products
 		cur.Stores = st.Stores
+		cur.BranchLookups = st.BranchLookups
 		cur.Direction = st.Direction
 		cur.Recommendation = st.Recommendation
 		if newLooks {

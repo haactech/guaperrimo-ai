@@ -206,13 +206,12 @@ func TestFullFlow(t *testing.T) {
 			"options": []map[string]string{{"id": "boda", "label": "Boda de día"}, {"id": "cita", "label": "Cita"}},
 		})),
 		// turn 2: button + device location. The server already looked up the
-		// nearby stores, so the searches are paused and the user is asked
-		// which store suits him best.
+		// nearby stores; there is no store question, so the searches run and
+		// the recommendation comes in the same turn.
 		calls(append([]llm.ToolCall{
 			call("u1", "update_profile", map[string]any{"occasion": "boda de día", "budget_mxn": 2000, "allow_shipping": true}),
 			call("s1", "find_nearby_stores", map[string]any{}),
 		}, searches("s2", "s3")...)...),
-		// turn 3: store chosen → search, finish
 		calls(searches("s4", "s5")...),
 		calls(call("f1", "finish_recommendation", map[string]any{
 			"summary":          "Con camisa de lino y chino claro vas perfecto para una boda de día.",
@@ -251,22 +250,6 @@ func TestFullFlow(t *testing.T) {
 		"type": "button_response", "option_id": "boda",
 		"location": map[string]any{"lat": 19.4194, "lng": -99.1616, "label": "Roma Norte"},
 	}, nil)
-	if code != 200 || body["is_final"] != false || body["input_mode"] != "buttons" || body["location_known"] != true {
-		t.Fatalf("the server should ask which store once it knows the location: %d %v", code, body)
-	}
-	storeOpts := body["options"].([]any)
-	if len(storeOpts) != 4 || !strings.HasPrefix(storeOpts[0].(map[string]any)["label"].(string), "Zara") || storeOpts[3].(map[string]any)["id"] != "any_store" {
-		t.Fatalf("store options: %v", storeOpts)
-	}
-	st, err := store.Get(ctx, "sess_flow_01")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(st.Stores) < 3 || st.Pending != "store" || len(st.Products) != 0 {
-		t.Fatalf("stores should be known and searches paused: stores=%d pending=%q products=%d", len(st.Stores), st.Pending, len(st.Products))
-	}
-
-	code, body = postJSON(t, base+"/chat", map[string]any{"type": "button_response", "option_id": storeOpts[0].(map[string]any)["id"]}, nil)
 	if code != 200 || body["is_final"] != true || body["location_known"] != true {
 		if st, err := store.Get(ctx, "sess_flow_01"); err == nil {
 			for _, m := range st.Messages {
@@ -277,8 +260,8 @@ func TestFullFlow(t *testing.T) {
 		}
 		t.Fatalf("final turn: %d %v", code, body)
 	}
-	if st, _ = store.Get(ctx, "sess_flow_01"); st.Profile.PreferredStore == nil || st.Profile.PreferredStore.Name != "Zara" {
-		t.Errorf("preferred store not recorded: %+v", st.Profile.PreferredStore)
+	if st, _ := store.Get(ctx, "sess_flow_01"); st.StoreAsked || st.Profile.PreferredStore != nil || len(st.Stores) < 3 {
+		t.Errorf("stores known and no store question: asked=%v preferred=%+v stores=%d", st.StoreAsked, st.Profile.PreferredStore, len(st.Stores))
 	}
 	list := body["shopping_list"].([]any)
 	if len(list) != 2 {
@@ -373,10 +356,8 @@ func TestPreviewFlow(t *testing.T) {
 	}
 	model := &scripted{responses: []*llm.CompletionResponse{
 		calls(call("a1", "ask_user", map[string]any{"message": "¿Para qué ocasión?", "input_mode": "voice"})),
-		// The proposal is paused by the server's store question…
+		// With the device location known there is no server question: the proposal goes straight through.
 		calls(call("u1", "update_profile", map[string]any{"occasion": "boda", "budget_mxn": 2000}), propose("p1")),
-		// …and repeated once the user picked a store.
-		calls(propose("p2")),
 		calls(call("a2", "ask_user", map[string]any{"message": "Listo, ¿busco en tiendas cercanas?", "input_mode": "voice"})),
 	}}
 	store := session.NewMemoryStore(time.Hour)
@@ -396,12 +377,8 @@ func TestPreviewFlow(t *testing.T) {
 		t.Fatalf("selection before a preview should be 409, got %d", code)
 	}
 
+	// No store question: occasion and budget are enough for the preview.
 	code, body := postJSON(t, base+"/chat", map[string]any{"type": "text", "text": "una boda, 2000 pesos"}, nil)
-	if code != 200 || body["input_mode"] != "buttons" || body["phase"] != "chat" {
-		t.Fatalf("the server should ask which store before the preview: %d %v", code, body)
-	}
-	chosen := body["options"].([]any)[0].(map[string]any)
-	code, body = postJSON(t, base+"/chat", map[string]any{"type": "button_response", "option_id": chosen["id"]}, nil)
 	if code != 200 || body["input_mode"] != "preview" || body["phase"] != "preview" {
 		t.Fatalf("preview turn: %d %v", code, body)
 	}
@@ -429,8 +406,8 @@ func TestPreviewFlow(t *testing.T) {
 	if d := st.Direction; d == nil || strings.Join(d.Selected, ",") != "idea_1,idea_4,idea_7" || strings.Join(d.Rejected, ",") != "idea_2,idea_3,idea_5,idea_6,idea_8,idea_9" {
 		t.Fatalf("the pick must be persisted: %+v", st.Direction)
 	}
-	if ps := st.Profile.PreferredStore; ps == nil || ps.PlaceID != chosen["id"] {
-		t.Errorf("the chosen store must be persisted: %+v", st.Profile.PreferredStore)
+	if st.StoreAsked || st.Profile.PreferredStore != nil {
+		t.Errorf("no store question in the flow: %+v", st.Profile.PreferredStore)
 	}
 }
 

@@ -512,6 +512,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			}
 		}
 		products = pesos
+		r.findBranches(ctx, ts, products)
 		ts.mu.Lock()
 		shopping.AnnotateNearby(products, ts.st.Stores)
 		ts.st.AddProducts(products)
@@ -541,9 +542,13 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if len(dropped) > 0 {
 			slog.WarnContext(ctx, "agent: dropped invalid ui components", "session_id", ts.st.ID, "reasons", strings.Join(dropped, "; "))
 		}
-		mode, opts = applyUI(mode, opts, comps)
 		message := strings.TrimSpace(a.Message)
 		ts.mu.Lock()
+		if r.Deps.RequirePreview { // the guided steps lead to the style preview
+			comps = withGuidedUI(ts.st, message, opts, comps)
+		}
+		comps = withQuestionText(message, comps)
+		mode, opts = applyUI(mode, opts, comps)
 		r.recordAskUI(ts.st, message, mode, opts, comps, ts.now)
 		ts.mu.Unlock()
 		return `{"ok":true}`, &TurnOutput{Message: message, InputMode: mode, Options: opts, UI: comps}
@@ -571,6 +576,13 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return paused, ask
 		}
 		r.attachReferences(ctx, d)
+		var refs []shopping.Product
+		for _, idea := range d.Ideas {
+			if idea.Reference != nil {
+				refs = append(refs, *idea.Reference)
+			}
+		}
+		r.findBranches(ctx, ts, refs)
 		ts.mu.Lock()
 		defer ts.mu.Unlock()
 		// References are real listings: keep them so the agent can recommend

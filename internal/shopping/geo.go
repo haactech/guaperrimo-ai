@@ -83,3 +83,83 @@ func AnnotateNearby(products []Product, stores []Store) {
 		products[i].NearbyStore = MatchNearbyStore(products[i].Store, stores)
 	}
 }
+
+// MerchantKey is the normalised merchant name used to match stores
+// ("H&M México" → "hm", "Liverpool" → "liverpool").
+func MerchantKey(merchant string) string { return normalizeMerchant(merchant) }
+
+// onlineOnly are merchants without walk-in stores in Mexico: looking for a
+// nearby branch would only waste a Maps search.
+var onlineOnly = []string{"amazon", "mercadolibre", "shein", "temu", "aliexpress", "ebay", "etsy", "wish", "linio", "claroshop", "dafiti", "farfetch", "asos"}
+
+// OnlineOnly reports whether the merchant sells only online.
+func OnlineOnly(merchant string) bool {
+	k := MerchantKey(merchant)
+	for _, o := range onlineOnly {
+		if strings.Contains(k, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// notRetail marks map results that carry a chain's name but are not a shop
+// you can walk into to buy clothes: "Sears Car service", "Sede Liverpool",
+// warehouses, offices.
+var notRetail = []string{
+	"car service", "automovil", "automotriz", "taller", "reparacion", "centro de servicio", "service center", "oficina", "office", "sede",
+	"corporativo", "corporate", "bodega", "warehouse", "almacen general", "centro de distribucion",
+	"distribution", "seguros", "insurance", "credito", "banco", "optica", "restaurante", "restaurant",
+	"cafeteria", "agencia de viajes", "viajes", "estacionamiento", "parking", "outlet de muebles",
+}
+
+// retailCategories are Maps categories of places that sell clothes.
+var retailCategories = []string{
+	"ropa", "moda", "departamental", "department", "grandes almacenes", "clothing", "clothes", "fashion", "boutique",
+	"zapater", "calzado", "shoe", "outlet", "autoservicio", "supermercado", "hipermercado",
+	"supermarket", "hypermarket", "centro comercial", "shopping", "mall", "deportiv", "sportswear",
+	"sastreria", "camiseria", "jeans", "uniformes",
+}
+
+// IsRetailStore reports whether a map result looks like a store that sells
+// clothes: nothing in notRetail, and a clothing-related Maps category when
+// the result has one ("Papelería Liverpool" is a stationery shop).
+func IsRetailStore(s Store) bool {
+	text := " " + accentReplacer.Replace(strings.ToLower(s.Name+" "+s.Category)) + " "
+	for _, w := range notRetail {
+		if strings.Contains(text, w) {
+			return false
+		}
+	}
+	cat := accentReplacer.Replace(strings.ToLower(s.Category))
+	if strings.TrimSpace(cat) == "" {
+		return true
+	}
+	for _, w := range retailCategories {
+		if strings.Contains(cat, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBranchOf reports whether a store is a branch of the merchant: its first
+// words spell the brand ("Liverpool Insurgentes", "H & M Reforma"), so
+// "Papelería Liverpool" does not count.
+func IsBranchOf(merchant, storeName string) bool {
+	key := MerchantKey(merchant)
+	if len(key) < 2 {
+		return false
+	}
+	prefix := ""
+	for _, tok := range strings.Fields(storeName) {
+		prefix += normalizeName(tok)
+		if prefix == key {
+			return true
+		}
+		if len(prefix) >= len(key) {
+			return false
+		}
+	}
+	return false
+}
