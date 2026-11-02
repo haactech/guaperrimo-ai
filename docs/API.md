@@ -44,12 +44,22 @@ El primer turno debe ser `type=image` (la foto se lee de R2, no del `image_url`)
 
 ### Preguntas del servidor
 
-Dos preguntas no las decide el modelo: las hace el servidor de forma determinista y resuelve la respuesta sin pasar por el LLM.
+La ubicación no la decide el modelo: el servidor la pregunta de forma determinista y resuelve la respuesta sin pasar por el LLM. No hay pregunta de tienda: el usuario elige prendas y cada una dice en qué tienda está y a qué distancia.
 
 1. **Ubicación.** (`ui`: un `text` con la pregunta.) Si la app no envió `location` (del dispositivo) y el usuario no se ha negado, justo antes de la primera búsqueda de productos o del preview de estilo el servidor pregunta "¿en qué colonia o zona y ciudad estás?" (`input_mode: voice`), geocodifica la respuesta y busca tiendas cercanas. Tras dos respuestas que no se pueden ubicar, o si el usuario dice que prefiere comprar en línea, se asume envío a domicilio y el flujo continúa.
-2. **Tienda preferida.** (`ui`: un `text` con la pregunta y un `chips` con `id: "store"` cuyas opciones son las mismas de `options`, `any_store` incluida.) Con la ubicación conocida y al menos dos tiendas cercanas, el servidor ofrece las tres más cercanas como botones (`"Liverpool Insurgentes · 450 m"`, id = `place_id`) más `any_store` ("Cualquiera"); el agente dirige `search_products` a la tienda elegida.
+Esta pregunta no cuenta para el límite de preguntas del agente. Enviar `location` desde el primer turno la evita; las tiendas cercanas se buscan en paralelo con el análisis de la foto y llegan en `stores` cuando `is_final` es `true`.
 
-Estas preguntas no cuentan para el límite de preguntas del agente. Enviar `location` desde el primer turno evita la primera; las tiendas cercanas se buscan en paralelo con el análisis de la foto y llegan en `stores` cuando `is_final` es `true`.
+### Primeros turnos guiados
+
+Antes del preview el estilista solo necesita la ocasión y el presupuesto, y el usuario los da tocando, no hablando. El servidor completa por su cuenta los `ui` de las preguntas del modelo (antes del preview):
+
+1. **Primera pregunta:** `text` (la pregunta), `text` con `role: "heading"` "Tu colorimetría: Otoño profundo", `palette` (6 colores que le favorecen, 2-3 a evitar y `note` con qué significa) y, mientras no se sepa la ocasión, `chips` con `id: "occasion"` (Boda de día, Boda de noche, Entrevista de trabajo, Una cita, Junta o evento de trabajo, Verme mejor a diario; `allow_voice: true`). La paleta sale de la estación de color del análisis de la foto, no del modelo; si el análisis no trae estación, no hay paleta.
+2. **Segunda pregunta:** `slider` `id: "budget"` (500-10,000 MXN, paso 250, `profile_field: "budget_mxn"`).
+3. Con ocasión y presupuesto, el agente propone el preview.
+
+El servidor decide el control de cada paso: mientras la ocasión es desconocida no hay slider, y después no hay chips. Si el modelo manda sus propios chips (o botones en `options`) mientras la ocasión es desconocida, se usan como chips de ocasión con `id: "occasion"`. Si la pregunta del modelo habla de otra cosa, el servidor agrega arriba del control un `text` `heading` con la pregunta correcta ("¿Para qué ocasión?", "¿Cuánto quieres invertir en total?"). Esto aplica solo con `AGENT_PREVIEW=true`.
+
+En todos los turnos con `ui`, el primer componente es la pregunta (`text` `stylist`): la app muestra solo los componentes, así que un slider o unos chips nunca llegan sin su pregunta. Tocar un chip de ocasión guarda la ocasión en el perfil sin depender del modelo, igual que el slider guarda el presupuesto.
 
 Response:
 
@@ -140,7 +150,7 @@ los `chips` de `ui`.
    `stylist`). Si hay `chips` y `options` viene vacío, las opciones se derivan
    de los chips y `input_mode` pasa a `buttons`. Si hay un `slider`,
    `input_mode` es `ui`. `message` sigue siendo obligatorio: es el `speech`.
-2. Preguntas del servidor (ubicación y tienda): ver "Preguntas del servidor".
+2. Pregunta del servidor (ubicación) y primeros turnos guiados: ver arriba.
 3. Recomendación final (`is_final: true` y `GET /recommendation`): el servidor
    compone `ui` por código, nunca el modelo: `text` (stylist, el resumen),
    `steps` (de `priority_actions`: `title`, `detail` = `description`,

@@ -54,7 +54,7 @@ func TestChatResponseCarriesUIFromAskUser(t *testing.T) {
 	if opts := body["options"].([]any); len(opts) != 0 {
 		t.Errorf("options must stay an empty array: %v", body["options"])
 	}
-	slider := body["ui"].([]any)[0].(map[string]any)
+	slider := body["ui"].([]any)[1].(map[string]any) // after the question text
 	if slider["profile_field"] != "budget_mxn" || slider["default"] != float64(2500) {
 		t.Errorf("slider: %v", slider)
 	}
@@ -62,12 +62,16 @@ func TestChatResponseCarriesUIFromAskUser(t *testing.T) {
 	if got := st.Transcript[len(st.Transcript)-2]; got.Role != "user" || got.Text != "Boda de día" {
 		t.Errorf("chip label not resolved: %+v", got)
 	}
-	if len(st.LastAssistantUI()) != 1 {
+	if len(st.LastAssistantUI()) != 2 {
 		t.Errorf("assistant ui must be persisted: %+v", st.Transcript)
 	}
 
-	// Turns without components omit ui entirely.
-	code, body = postJSON(t, base+"/chat", map[string]any{"type": "text", "text": "hola"}, nil)
+	// Turns without components omit ui entirely. With the occasion (from the
+	// chip) and the budget (from the slider) known, the server adds nothing.
+	if st.Profile.Occasion != "Boda de día" {
+		t.Errorf("the occasion chip must set the occasion: %q", st.Profile.Occasion)
+	}
+	code, body = postJSON(t, base+"/chat", map[string]any{"type": "ui_action", "component_id": "budget", "value": "3000"}, nil)
 	raw, _ := json.Marshal(body)
 	if code != 200 || body["ui_version"] != float64(1) || body["speech"] != "¿Algo más?" || body["ui"] != nil {
 		t.Fatalf("plain turn: %d %s", code, raw)

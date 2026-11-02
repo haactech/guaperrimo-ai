@@ -541,9 +541,13 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if len(dropped) > 0 {
 			slog.WarnContext(ctx, "agent: dropped invalid ui components", "session_id", ts.st.ID, "reasons", strings.Join(dropped, "; "))
 		}
-		mode, opts = applyUI(mode, opts, comps)
 		message := strings.TrimSpace(a.Message)
 		ts.mu.Lock()
+		if r.Deps.RequirePreview { // the guided steps lead to the style preview
+			comps = withGuidedUI(ts.st, message, opts, comps)
+		}
+		comps = withQuestionText(message, comps)
+		mode, opts = applyUI(mode, opts, comps)
 		r.recordAskUI(ts.st, message, mode, opts, comps, ts.now)
 		ts.mu.Unlock()
 		return `{"ok":true}`, &TurnOutput{Message: message, InputMode: mode, Options: opts, UI: comps}

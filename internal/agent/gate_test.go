@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"stylerag/internal/llm"
-	"stylerag/internal/session"
 	"stylerag/internal/shopping"
 )
 
@@ -20,11 +19,10 @@ func fakeStores(t *testing.T) []shopping.Store {
 	return stores
 }
 
-func TestServerAsksLocationThenStoreBeforeThePreview(t *testing.T) {
+func TestServerAsksLocationBeforeThePreview(t *testing.T) {
 	model := &scripted{responses: []*llm.CompletionResponse{
 		calls(call("p1", toolPropose, proposal())),
 		calls(call("p2", toolPropose, proposal())),
-		calls(call("p3", toolPropose, proposal())),
 	}}
 	r := NewRunner(model, Deps{Shopping: shopping.Fake{}, RequirePreview: true}, 5, 6)
 	st := newState()
@@ -56,26 +54,9 @@ func TestServerAsksLocationThenStoreBeforeThePreview(t *testing.T) {
 	if len(st.Stores) == 0 {
 		t.Fatal("stores should be looked up right after geocoding")
 	}
-	if out.InputMode != "buttons" || len(out.Options) != 4 || st.Pending != "store" || out.Options[3].ID != anyStoreOptionID {
-		t.Fatalf("expected the store question with 3 stores + any, got %+v", out)
-	}
-	if !strings.Contains(toolMessage(st, "p2"), "tienda") {
-		t.Errorf("the second pause should name the store question: %s", toolMessage(st, "p2"))
-	}
-
-	chosen := out.Options[0]
-	out, err = r.RunTurn(ctx, st, TurnInput{Kind: "button", Text: chosen.Label})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ps := st.Profile.PreferredStore; ps == nil || ps.PlaceID != chosen.ID {
-		t.Fatalf("preferred store not recorded: %+v", st.Profile.PreferredStore)
-	}
-	if out.InputMode != "preview" || st.Direction == nil || st.Pending != "" {
-		t.Fatalf("expected the preview once both answers are in, got %+v", out)
-	}
-	if prompt := r.systemPrompt(st, r.Now()); !strings.Contains(prompt, "Tienda preferida: Zara") || !strings.Contains(prompt, `store="Zara"`) {
-		t.Errorf("prompt should steer searches to the chosen store")
+	// No store question: the user picks garments, and each one says where it is.
+	if out.InputMode != "preview" || st.Direction == nil || st.Pending != "" || st.StoreAsked {
+		t.Fatalf("expected the preview right after the location, got %+v", out)
 	}
 }
 
@@ -158,8 +139,8 @@ func TestDeviceLocationSkipsTheLocationQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.InputMode != "buttons" || st.Pending != "store" || st.LocationAsks != 0 {
-		t.Fatalf("with a device location only the store question remains, got %+v", out)
+	if out.InputMode != "preview" || st.Pending != "" || st.LocationAsks != 0 {
+		t.Fatalf("with a device location the preview comes without server questions, got %+v", out)
 	}
 }
 
@@ -173,14 +154,14 @@ func TestServerQuestionPausesEverySearchInTheBatch(t *testing.T) {
 	}}
 	r := NewRunner(model, Deps{Shopping: shopping.Fake{}}, 5, 6)
 	st := newState()
-	st.AddStores(fakeStores(t))
+	st.Location = nil
 
 	out, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "text", Text: "hola"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.InputMode != "buttons" || out.Message != storeQuestion {
-		t.Fatalf("the store question should end the turn, got %+v", out)
+	if out.InputMode != "voice" || out.Message != locationQuestion {
+		t.Fatalf("the location question should end the turn, got %+v", out)
 	}
 	if len(st.Products) != 0 {
 		t.Errorf("no search should run while the server question is pending")
@@ -192,24 +173,6 @@ func TestServerQuestionPausesEverySearchInTheBatch(t *testing.T) {
 	}
 	if !strings.Contains(toolMessage(st, "a1"), "ignorado") {
 		t.Errorf("the model's own question must be ignored: %s", toolMessage(st, "a1"))
-	}
-}
-
-func TestAnyStoreLeavesNoPreference(t *testing.T) {
-	r := NewRunner(&scripted{}, Deps{Shopping: shopping.Fake{}}, 5, 6)
-	st := newState()
-	st.AddStores(fakeStores(t))
-	st.Pending = "store"
-	st.Transcript = append(st.Transcript, session.Turn{Role: "assistant", InputMode: "buttons", Options: storeOptions(st.Stores, 3), Server: true})
-
-	note := r.resolvePending(context.Background(), st, TurnInput{Kind: "button", Text: "Cualquiera"})
-	if st.Profile.PreferredStore != nil || !strings.Contains(note, "no eligió") || st.Pending != "" {
-		t.Fatalf("'any store' must not set a preference: %+v / %s", st.Profile.PreferredStore, note)
-	}
-	st.Pending = "store"
-	note = r.resolvePending(context.Background(), st, TurnInput{Kind: "voice", Text: "la de Liverpool me queda mejor"})
-	if ps := st.Profile.PreferredStore; ps == nil || !strings.HasPrefix(ps.Name, "Liverpool") {
-		t.Fatalf("a spoken store name should be matched: %+v / %s", st.Profile.PreferredStore, note)
 	}
 }
 
@@ -233,23 +196,6 @@ func TestServerQuestionsCarryUI(t *testing.T) {
 	}
 	if last := st.Transcript[len(st.Transcript)-1]; len(last.UI) != 1 {
 		t.Errorf("server question ui must be recorded: %+v", last)
-	}
-
-	out, err = r.RunTurn(ctx, st, TurnInput{Kind: "voice", Text: "Roma Norte, Ciudad de México"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.InputMode != "buttons" || len(out.UI) != 2 || out.UI[0].Type != "text" {
-		t.Fatalf("store question ui: %+v", out)
-	}
-	chips := out.UI[1]
-	if chips.Type != "chips" || chips.ID != "store" || len(chips.Options) != len(out.Options) || chips.Options[len(chips.Options)-1].ID != anyStoreOptionID {
-		t.Fatalf("store chips must mirror the options: %+v", chips)
-	}
-	for i, o := range out.Options {
-		if chips.Options[i].ID != o.ID || chips.Options[i].Label != o.Label {
-			t.Errorf("chip %d differs from option: %+v vs %+v", i, chips.Options[i], o)
-		}
 	}
 }
 
