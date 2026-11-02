@@ -81,8 +81,8 @@ func buildDirection(a proposeDirectionArgs, now time.Time) (*session.Direction, 
 	for _, in := range a.Ideas {
 		slot := strings.TrimSpace(in.Slot)
 		garment := strings.TrimSpace(in.Garment)
-		if !isIdeaSlot(slot) || garment == "" || len(bySlot[slot]) == ideasPerSlot {
-			continue // accessories, footwear, unknown slots and extras are dropped
+		if !isIdeaSlot(slot) || garment == "" || len(bySlot[slot]) == ideasPerSlot || !shopping.IsMenswear(garment) {
+			continue // accessories, footwear, unknown slots, women's garments and extras are dropped
 		}
 		idea := session.GarmentIdea{
 			Slot:        slot,
@@ -173,7 +173,7 @@ func bestReference(idea session.GarmentIdea, ps []shopping.Product) *shopping.Pr
 	bestScore := -1
 	for i := range ps {
 		p := ps[i]
-		if p.Currency != "MXN" || (p.Thumbnail == "" && p.LargeImage == "") {
+		if p.Currency != "MXN" || (p.Thumbnail == "" && p.LargeImage == "") || !shopping.IsMenswear(p.Title) {
 			continue
 		}
 		title := strings.ToLower(p.Title)

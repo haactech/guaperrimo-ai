@@ -517,6 +517,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if limit <= 0 || limit > r.Deps.MaxProducts {
 			limit = r.Deps.MaxProducts
 		}
+		query = shopping.MensQuery(query)
 		products, err := r.Deps.Shopping.SearchProducts(ctx, shopping.ProductQuery{Query: query, MaxPrice: a.MaxPriceMXN, Location: r.Deps.DefaultLocation, Limit: limit})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: product search failed", "query", query, "error", err)
@@ -529,7 +530,9 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 				pesos = append(pesos, p)
 			}
 		}
-		products = pesos
+		// Only men's clothing: Google Shopping mixes in women's and kids'
+		// listings even when the query says "hombre".
+		products = shopping.ForMen(pesos)
 		r.findBranches(ctx, ts, products)
 		ts.mu.Lock()
 		shopping.AnnotateNearby(products, ts.st.Stores)

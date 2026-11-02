@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
+	"stylerag/internal/llm"
+	"stylerag/internal/session"
 	"stylerag/internal/shopping"
 )
 
@@ -73,5 +76,57 @@ func TestBrandDropsCountryNoise(t *testing.T) {
 		if got := brand(in); got != want {
 			t.Errorf("brand(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// mixedShops returns a women's and a kids' listing next to the men's ones,
+// as Google Shopping does even for "hombre" queries.
+type mixedShops struct {
+	shopping.Fake
+	queries []string
+}
+
+func (m *mixedShops) SearchProducts(ctx context.Context, q shopping.ProductQuery) ([]shopping.Product, error) {
+	m.queries = append(m.queries, q.Query)
+	ps, err := m.Fake.SearchProducts(ctx, q)
+	ps = append(ps,
+		shopping.Product{ID: "p_blusa", Title: "Blusa de lino manga larga para mujer", Store: "Zara MX", Price: 699, Currency: "MXN", Thumbnail: "x"},
+		shopping.Product{ID: "p_nino", Title: "Camisa de lino para niño", Store: "H&M", Price: 399, Currency: "MXN", Thumbnail: "x"},
+	)
+	return ps, err
+}
+
+func TestSearchKeepsOnlyMensClothing(t *testing.T) {
+	shops := &mixedShops{}
+	model := &scripted{responses: []*llm.CompletionResponse{
+		calls(call("s1", toolSearchProducts, map[string]any{"query": "camisa de lino verde"})),
+		calls(call("a1", toolAskUser, map[string]any{"message": "¿Te late?", "input_mode": "voice"})),
+	}}
+	r := NewRunner(model, Deps{Shopping: shops}, 5, 6)
+	st := newState()
+	if _, err := r.RunTurn(context.Background(), st, TurnInput{Kind: "voice", Text: "hola"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(shops.queries) != 1 || shops.queries[0] != "camisa de lino verde hombre" {
+		t.Fatalf("the search must ask for men's clothing: %v", shops.queries)
+	}
+	for id, p := range st.Products {
+		if !shopping.IsMenswear(p.Title) || id == "p_blusa" || id == "p_nino" {
+			t.Fatalf("women's or kids' listing reached the stylist: %+v", p)
+		}
+	}
+	if msg := toolMessage(st, "s1"); strings.Contains(msg, "Blusa") || strings.Contains(msg, "niño") {
+		t.Fatalf("the model must not see them either: %s", msg)
+	}
+}
+
+func TestReferencesSkipWomensListings(t *testing.T) {
+	idea := session.GarmentIdea{Colors: []session.Swatch{{Name: "Verde"}}, Textures: []string{"lino"}}
+	ps := []shopping.Product{
+		{ID: "blusa", Title: "Blusa de lino verde para mujer", Currency: "MXN", Thumbnail: "x"},
+		{ID: "camisa", Title: "Camisa azul de algodón hombre", Currency: "MXN", Thumbnail: "x"},
+	}
+	if got := bestReference(idea, ps); got == nil || got.ID != "camisa" {
+		t.Fatalf("a better color match for women never wins: %+v", got)
 	}
 }
