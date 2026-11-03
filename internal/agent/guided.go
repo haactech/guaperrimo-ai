@@ -36,19 +36,26 @@ func budgetSlider() ui.Component {
 	return ui.Slider(budgetSliderID, "Presupuesto total", 500, 10000, 250, 2500, "MXN", ui.FieldBudgetMXN)
 }
 
-// withGuidedUI makes the server, not the model, decide the control of the
-// turns before the preview: the colour palette from the photo analysis on
-// the first question (replacing any the model sent), occasion chips while the
-// occasion is unknown, then the budget slider. A control for something else
-// is dropped, and when the model's question is about something else the
-// server adds the right heading above the control, so question and control
-// always match.
+// withGuidedUI makes the server, not the model, decide the controls of the
+// turns before the preview. The stylist needs the occasion and the budget, and
+// the user answers both on one screen: occasion chips and the budget slider,
+// confirmed together (ui_action with values), or by voice. The palette from
+// the photo analysis opens the first question (replacing any the model sent).
+//
+// A control is shown while its answer is unknown, and also whenever the
+// question asks for it: the model sometimes records an occasion it guessed
+// from the photo before the user said anything, and then asks for the
+// occasion anyway. When the question does not mention a control, the server
+// adds a heading above it, so question and controls always match.
 func withGuidedUI(st *session.State, message string, opts []session.Option, comps []ui.Component) []ui.Component {
 	if st.Recommendation != nil || (st.Direction != nil && st.Direction.ChosenAt != nil) {
 		return comps // follow-ups after the preview keep the model's layout
 	}
-	occasionUnknown := strings.TrimSpace(st.Profile.Occasion) == ""
-	budgetUnknown := st.Profile.BudgetMXN <= 0
+	asksOccasion := mentions(message, "ocasión", "ocasion", "para qué", "para que", "evento", "momento")
+	asksBudget := mentions(message, "presupuesto", "invertir", "gastar", "pesos", "cuánto", "cuanto")
+	needOccasion := strings.TrimSpace(st.Profile.Occasion) == "" || asksOccasion
+	needBudget := st.Profile.BudgetMXN <= 0 || asksBudget
+
 	var head []ui.Component
 	if firstAssistantTurn(st) {
 		// The palette comes from the photo analysis, not from the model: it is
@@ -58,42 +65,37 @@ func withGuidedUI(st *session.State, message string, opts []session.Option, comp
 			head = append(head, pal...)
 		}
 	}
-	var control *ui.Component
-	switch {
-	case occasionUnknown:
-		comps = withoutType(comps, ui.TypeSlider)
-		if c := ui.FindChips(comps); c != nil {
-			c.ID = occasionChipsID // the model's own occasion chips also set the occasion
-		} else {
-			chips := ui.Chips(occasionChipsID, true, occasionChips)
-			if len(opts) >= 2 { // the model's buttons become the occasion chips
-				chips.Options = nil
-				for _, o := range opts {
-					chips.Options = append(chips.Options, ui.Option{ID: o.ID, Label: o.Label})
-				}
-			}
-			control = &chips
-		}
-		if !mentions(message, "ocasión", "ocasion", "para qué", "para que", "evento", "momento") {
-			head = append(head, ui.Text(ui.RoleHeading, "¿Para qué ocasión?"))
-		}
-	case budgetUnknown:
-		comps = withoutType(comps, ui.TypeChips)
-		if c := ui.FindSlider(comps); c == nil || c.ProfileField != ui.FieldBudgetMXN {
-			comps = withoutType(comps, ui.TypeSlider)
-			slider := budgetSlider()
-			control = &slider
-		}
-		if !mentions(message, "presupuesto", "invertir", "gastar", "pesos", "cuánto", "cuanto") {
-			head = append(head, ui.Text(ui.RoleHeading, "¿Cuánto quieres invertir en total?"))
-		}
-	}
-	if len(head) == 0 && control == nil {
+	if !needOccasion && !needBudget && len(head) == 0 {
 		return comps
 	}
-	// The canvas replaces the plain message on screen, so it must carry the
-	// question itself. Order: question, palette and heading, the model's
-	// other components, then the control.
+
+	// The model's own controls are replaced by the guided ones; its buttons
+	// or chips become the occasion choices.
+	var occasion *ui.Component
+	if needOccasion {
+		chips := ui.Chips(occasionChipsID, true, occasionChips)
+		if c := ui.FindChips(comps); c != nil && len(c.Options) >= 2 {
+			chips.Options = c.Options
+		} else if len(opts) >= 2 {
+			chips.Options = nil
+			for _, o := range opts {
+				chips.Options = append(chips.Options, ui.Option{ID: o.ID, Label: o.Label})
+			}
+		}
+		occasion = &chips
+	}
+	var budget *ui.Component
+	if needBudget {
+		slider := budgetSlider()
+		if c := ui.FindSlider(comps); c != nil && c.ProfileField == ui.FieldBudgetMXN {
+			slider = *c
+		}
+		budget = &slider
+	}
+	comps = withoutType(withoutType(comps, ui.TypeChips), ui.TypeSlider)
+
+	// Order: the question, the palette, the model's other components, then
+	// each control with a heading when the question does not ask for it.
 	if findType(comps, ui.TypeText) == nil {
 		comps = append([]ui.Component{ui.Text(ui.RoleStylist, message)}, comps...)
 	}
@@ -105,19 +107,19 @@ func withGuidedUI(st *session.State, message string, opts []session.Option, comp
 		}
 	}
 	out := append(append(append([]ui.Component{}, comps[:at]...), head...), comps[at:]...)
-	// Model controls go last too.
-	var rest, controls []ui.Component
-	for _, c := range out {
-		if c.Type == ui.TypeChips || c.Type == ui.TypeSlider {
-			controls = append(controls, c)
-		} else {
-			rest = append(rest, c)
+	if occasion != nil {
+		if !asksOccasion {
+			out = append(out, ui.Text(ui.RoleHeading, "¿Para qué ocasión?"))
 		}
+		out = append(out, *occasion)
 	}
-	if control != nil {
-		controls = append(controls, *control)
+	if budget != nil {
+		if !asksBudget {
+			out = append(out, ui.Text(ui.RoleHeading, "¿Cuánto quieres invertir en total?"))
+		}
+		out = append(out, *budget)
 	}
-	return append(rest, controls...)
+	return out
 }
 
 func mentions(text string, words ...string) bool {
@@ -210,4 +212,15 @@ func withQuestionText(message string, comps []ui.Component) []ui.Component {
 		return comps
 	}
 	return append([]ui.Component{ui.Text(ui.RoleStylist, message)}, comps...)
+}
+
+// userHasAnswered reports whether the user said anything yet (the photo turn
+// does not count).
+func userHasAnswered(st *session.State) bool {
+	for _, t := range st.Transcript {
+		if t.Role == "user" {
+			return true
+		}
+	}
+	return false
 }

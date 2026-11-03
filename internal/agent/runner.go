@@ -389,8 +389,26 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 			return errJSON("argumentos inválidos: " + err.Error()), nil
 		}
 		ts.mu.Lock()
+		// Before the user has answered anything, the occasion and budget can
+		// only be guesses from the photo; recording them made the server
+		// think they were known and skip the question's controls.
+		var ignored []string
+		if !userHasAnswered(ts.st) {
+			if strings.TrimSpace(a.Occasion) != "" {
+				a.Occasion, a.EventDate = "", ""
+				ignored = append(ignored, "ocasión")
+			}
+			if a.BudgetMXN > 0 {
+				a.BudgetMXN = 0
+				ignored = append(ignored, "presupuesto")
+			}
+		}
 		applyProfile(&ts.st.Profile, a)
-		res := toJSON(map[string]any{"ok": true, "profile": ts.st.Profile})
+		body := map[string]any{"ok": true, "profile": ts.st.Profile}
+		if len(ignored) > 0 {
+			body["ignorado"] = "el usuario aún no ha dicho su " + strings.Join(ignored, " ni su ") + "; pregúntale, no lo supongas por la foto"
+		}
+		res := toJSON(body)
 		ts.mu.Unlock()
 		return res, nil
 
@@ -499,6 +517,7 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 		if limit <= 0 || limit > r.Deps.MaxProducts {
 			limit = r.Deps.MaxProducts
 		}
+		query = shopping.MensQuery(query)
 		products, err := r.Deps.Shopping.SearchProducts(ctx, shopping.ProductQuery{Query: query, MaxPrice: a.MaxPriceMXN, Location: r.Deps.DefaultLocation, Limit: limit})
 		if err != nil {
 			slog.WarnContext(ctx, "agent: product search failed", "query", query, "error", err)
@@ -511,7 +530,9 @@ func (r *Runner) execTool(ctx context.Context, ts *turnState, call llm.ToolCall)
 				pesos = append(pesos, p)
 			}
 		}
-		products = pesos
+		// Only men's clothing: Google Shopping mixes in women's and kids'
+		// listings even when the query says "hombre".
+		products = shopping.ForMen(pesos)
 		r.findBranches(ctx, ts, products)
 		ts.mu.Lock()
 		shopping.AnnotateNearby(products, ts.st.Stores)

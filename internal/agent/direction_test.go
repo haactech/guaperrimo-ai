@@ -40,6 +40,7 @@ func proposal() map[string]any {
 			idea("upper_body", "Polo de punto", "Verde olivo", "#6B7445"),
 			idea("lower_body", "Chino slim", "Azul marino", "#1F2A44"),
 			idea("outerwear", "Blazer de punto", "Gris", "#8A8D91"),
+			idea("upper_body", "Blusa de lino", "Blanco", "#FFFFFF"), // never a women's garment
 			idea("upper_body", "Playera extra", "Negro", "#111111"),
 		},
 	}

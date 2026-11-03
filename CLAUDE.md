@@ -65,6 +65,7 @@ docker compose up       # app + postgres
 go run ./cmd/tryontest -provider gemini -together -person p.jpg -garment upper_body=g.jpg   # try-on smoke test (billed)
 python3 scripts/chat.py --photo foto.jpg              # interactive terminal client (no iPhone needed)
 LLM_LIVE=1 go test ./internal/llm -run Live -v        # one real tool-calling round trip
+AGENT_EVAL=1 go test ./internal/agent -run TestEvalFirstQuestions -v   # live eval of the first questions (real LLM, fake products)
 ```
 
 ## Configuration

@@ -228,6 +228,9 @@ func turnInput(req ChatRequest) (agent.TurnInput, error) {
 		}
 		return agent.TurnInput{Kind: "text", Text: req.Text}, nil
 	case "ui_action":
+		if len(req.Values) > 0 {
+			return agent.TurnInput{Kind: "ui"}, nil // text is built from the components
+		}
 		if strings.TrimSpace(req.ComponentID) == "" {
 			return agent.TurnInput{}, fmt.Errorf("missing field: component_id")
 		}
@@ -288,35 +291,73 @@ func applyTurnContext(st *session.State, req ChatRequest) {
 	}
 }
 
-// applyUIAction resolves a slider action against the components of the last
-// assistant turn. When the slider is bound to a profile field the value is
-// written to the profile right here, so it never depends on the model. It
-// returns the text the agent sees after "[ui] ".
+// applyUIAction resolves a ui_action against the components of the last
+// assistant turn: one slider (component_id + value), or several answers from
+// one screen (values: the occasion chip and the budget slider together).
+// Values bound to the profile (budget, radius, occasion) are written right
+// here, so they never depend on the model. It returns the text the agent
+// sees after "[ui] ".
 func applyUIAction(st *session.State, req ChatRequest) (string, error) {
-	c := ui.FindByID(st.LastAssistantUI(), strings.TrimSpace(req.ComponentID))
-	if c == nil || c.Type != ui.TypeSlider {
-		return "", fmt.Errorf("unknown component_id: %s", req.ComponentID)
+	values := req.Values
+	if len(values) == 0 {
+		values = map[string]string{req.ComponentID: req.Value}
 	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(req.Value), 64)
-	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-		return "", fmt.Errorf("value must be a number")
+	last := st.LastAssistantUI()
+	// Stable order: the screen's order, so the agent reads "Ocasión… Presupuesto…".
+	var parts []string
+	seen := 0
+	for _, c := range last {
+		raw, ok := values[c.ID]
+		if !ok || c.ID == "" {
+			continue
+		}
+		seen++
+		raw = strings.TrimSpace(raw)
+		switch c.Type {
+		case ui.TypeSlider:
+			v, err := strconv.ParseFloat(raw, 64)
+			if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+				return "", fmt.Errorf("value for %s must be a number", c.ID)
+			}
+			v = math.Min(math.Max(v, c.Min), c.Max)
+			switch c.ProfileField {
+			case ui.FieldBudgetMXN:
+				st.Profile.BudgetMXN = v
+			case ui.FieldRadiusM:
+				st.Profile.RadiusM = int(math.Round(v))
+			}
+			label := c.Label
+			if label == "" {
+				label = c.ID
+			}
+			text := label + ": " + strconv.FormatFloat(v, 'f', -1, 64)
+			if c.Unit != "" {
+				text += " " + c.Unit
+			}
+			parts = append(parts, text)
+		case ui.TypeChips:
+			label := ""
+			for _, o := range c.Options {
+				if o.ID == raw {
+					label = o.Label
+				}
+			}
+			if label == "" {
+				return "", fmt.Errorf("unknown option %q for %s", raw, c.ID)
+			}
+			if agent.OccasionFromChip(st, raw) {
+				parts = append(parts, "Ocasión: "+label)
+			} else {
+				parts = append(parts, label)
+			}
+		default:
+			return "", fmt.Errorf("component %s does not take a value", c.ID)
+		}
 	}
-	v = math.Min(math.Max(v, c.Min), c.Max)
-	switch c.ProfileField {
-	case ui.FieldBudgetMXN:
-		st.Profile.BudgetMXN = v
-	case ui.FieldRadiusM:
-		st.Profile.RadiusM = int(math.Round(v))
+	if seen != len(values) {
+		return "", fmt.Errorf("unknown component_id in values")
 	}
-	label := c.Label
-	if label == "" {
-		label = c.ID
-	}
-	text := label + ": " + strconv.FormatFloat(v, 'f', -1, 64)
-	if c.Unit != "" {
-		text += " " + c.Unit
-	}
-	return text, nil
+	return strings.Join(parts, ". "), nil
 }
 
 func optionLabel(st *session.State, optionID string) string {
