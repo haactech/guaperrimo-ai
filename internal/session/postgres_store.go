@@ -43,6 +43,9 @@ func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
 
 func (s *PostgresStore) Close() { s.pool.Close() }
 
+// Pool shares the connection pool with other stores (polls).
+func (s *PostgresStore) Pool() *pgxpool.Pool { return s.pool }
+
 func (s *PostgresStore) Get(ctx context.Context, id string) (*State, error) {
 	var data []byte
 	err := s.pool.QueryRow(ctx, `SELECT state FROM sessions WHERE id = $1`, id).Scan(&data)

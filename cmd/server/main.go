@@ -14,6 +14,7 @@ import (
 	"stylerag/internal/api"
 	"stylerag/internal/config"
 	"stylerag/internal/llm"
+	"stylerag/internal/poll"
 	"stylerag/internal/session"
 	"stylerag/internal/shopping"
 	"stylerag/internal/storage"
@@ -78,8 +79,9 @@ func main() {
 	}
 	slog.InfoContext(ctx, "shopping configured", "provider", shop.Name(), "location", cfg.SearchLocation, "radius_m", cfg.DefaultRadiusM)
 
-	// Session store.
+	// Session store; polls live next to it.
 	var store session.Store
+	var polls poll.Store
 	if cfg.PostgresURL != "" {
 		pg, err := session.NewPostgresStore(ctx, cfg.PostgresURL)
 		if err != nil {
@@ -88,11 +90,18 @@ func main() {
 		}
 		defer pg.Close()
 		store = pg
+		pgPolls, err := poll.NewPostgresStore(ctx, pg.Pool())
+		if err != nil {
+			slog.ErrorContext(ctx, "polls init failed", "error", err)
+			os.Exit(1)
+		}
+		polls = pgPolls
 		slog.InfoContext(ctx, "sessions: postgres")
 	} else {
 		mem := session.NewMemoryStore(cfg.SessionTTL)
 		defer mem.Stop()
 		store = mem
+		polls = poll.NewMemoryStore()
 		slog.WarnContext(ctx, "sessions: in-memory (lost on restart)", "ttl", cfg.SessionTTL)
 	}
 
@@ -160,7 +169,8 @@ func main() {
 		slog.WarnContext(ctx, "tts disabled", "reason", "ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not set; the app uses the iPhone voice")
 	}
 
-	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, TTS: ttsDeps, Matrix: matrixDeps, Signed: images})
+	router := api.NewRouter(api.Deps{APIKey: cfg.APIKey, Images: images, Store: store, Chat: chatDeps, TryOn: tryonDeps, TTS: ttsDeps, Matrix: matrixDeps, Signed: images,
+		Polls: &api.PollDeps{Polls: polls, Store: store, Signed: images, BaseURL: publicBase}})
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

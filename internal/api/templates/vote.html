@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>{{if eq .State "thanks"}}¡Gracias por opinar!{{else if eq .State "form"}}¿Con cuál se ve mejor?{{else}}Hechura{{end}}</title>
+<meta property="og:title" content="¿Con cuál se ve mejor? Ayúdame a escoger">
+<meta property="og:description" content="Dos looks, un voto. Toma 10 segundos.">
+<style>
+:root {
+  --bg: #F3ECE7; --surface: #FBF7F3; --ink: #1C1917; --muted: #6B5F57; --line: #DCD0C7;
+  --accent: #8B4A24; --accent-ink: #FBF7F3; --accent-soft: #EAD7C8; --error: #9C2F2F;
+  --display: "Gloock", ui-serif, "New York", "Bodoni 72", Georgia, serif;
+  --body: ui-sans-serif, -apple-system, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171412; --surface: #211C19; --ink: #EDE4DC; --muted: #A69789; --line: #3A322D;
+    --accent: #D38D5C; --accent-ink: #171412; --accent-soft: #3A2A1F; --error: #E07A6E;
+    color-scheme: dark;
+  }
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 1.0625rem/1.55 var(--body);
+}
+main {
+  max-width: 46rem; margin: 0 auto;
+  padding: 1.25rem max(16px, env(safe-area-inset-left)) 2.5rem max(16px, env(safe-area-inset-right));
+}
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
+.wordmark { font-family: var(--display); font-size: 1.35rem; letter-spacing: 0.01em; }
+.label { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-weight: 400; font-size: clamp(2rem, 8vw, 3rem); line-height: 1.05; margin: 1.5rem 0 0.5rem; text-wrap: balance; }
+h2 { font-family: var(--display); font-weight: 400; font-size: 1.3rem; margin: 0 0 0.75rem; }
+p { margin: 0; }
+.lead { color: var(--muted); max-width: 34rem; }
+.occasion { margin-top: 0.75rem; }
+
+/* The two looks: always side by side, so the comparison is one glance. */
+.looks { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(0.6rem, 2.5vw, 1.25rem); margin: 1.5rem 0 2rem; border: 0; padding: 0; }
+.look { position: relative; display: block; cursor: pointer; }
+.look input { position: absolute; opacity: 0; pointer-events: none; }
+.look figure {
+  margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  transition: border-color .15s, box-shadow .15s, transform .15s;
+}
+.look img { display: block; width: 100%; height: auto; background: var(--line); }
+.look figcaption { display: flex; gap: 0.5rem; align-items: baseline; padding: 0.6rem 0.75rem 0.75rem; font-size: 0.95rem; line-height: 1.3; }
+.letter { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); flex: none; }
+.pick {
+  position: absolute; top: 0.6rem; left: 0.6rem; padding: 0.3rem 0.65rem; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 0.8rem; font-weight: 600; opacity: 0; transform: scale(.9);
+  transition: opacity .15s, transform .15s;
+}
+.look:hover figure { border-color: var(--muted); }
+.look input:focus-visible + figure { outline: 2px solid var(--accent); outline-offset: 3px; }
+.look input:checked + figure { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.look input:checked ~ .pick { opacity: 1; transform: none; }
+.looks:has(input:checked) .look input:not(:checked) + figure { opacity: .72; }
+
+fieldset { border: 0; padding: 0; margin: 0 0 1.75rem; min-width: 0; }
+legend { padding: 0; margin-bottom: 0.75rem; font-family: var(--display); font-size: 1.3rem; }
+.optional { font-family: var(--body); font-size: 0.85rem; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip { position: relative; }
+.chip input { position: absolute; opacity: 0; pointer-events: none; }
+.chip span {
+  display: inline-block; padding: 0.55rem 0.95rem; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--surface); font-size: 0.95rem; cursor: pointer; user-select: none;
+}
+.chip input:checked + span { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.field { display: grid; gap: 0.4rem; margin-bottom: 1.25rem; }
+.field label { font-size: 0.95rem; }
+textarea, input[type=text] {
+  width: 100%; font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.85rem;
+}
+textarea { min-height: 5.5rem; resize: vertical; }
+textarea:focus, input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+
+.submit {
+  display: block; width: 100%; padding: 1rem; border: 0; border-radius: 12px; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink); font: 600 1.05rem var(--body);
+}
+.submit:active { transform: translateY(1px); }
+.error { color: var(--error); font-weight: 600; margin: -0.5rem 0 1.25rem; }
+.fine { color: var(--muted); font-size: 0.85rem; margin-top: 1rem; text-align: center; }
+
+/* Results after voting */
+.results { display: grid; gap: 1rem; margin: 1.5rem 0; }
+.result { display: grid; grid-template-columns: 4.5rem 1fr; gap: 0.9rem; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0.6rem; }
+.result.mine { border-color: var(--accent); }
+.result img { width: 4.5rem; aspect-ratio: 3 / 4; object-fit: cover; object-position: top; border-radius: 8px; }
+.result .name { font-size: 0.95rem; line-height: 1.3; }
+.bar { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 0.45rem 0 0.3rem; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.count { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.again { display: inline-block; margin-top: 0.5rem; color: var(--accent); text-underline-offset: 0.18em; }
+footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+
+@media (min-width: 40rem) {
+  main { padding-top: 2rem; }
+  .submit { width: auto; padding-inline: 2.5rem; }
+  .fine { text-align: left; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="wordmark">Hechura</span>
+    <span class="label">Segunda opinión</span>
+  </header>
+
+{{if eq .State "form"}}
+  <h1>¿Con cuál se ve mejor?</h1>
+  <p class="lead">Alguien de confianza te pidió tu opinión antes de comprar. Toca el look que le recomiendas.</p>
+  {{with .Occasion}}<p class="occasion label">Ocasión · {{.}}</p>{{end}}
+
+  <form method="post" action="{{.Action}}">
+    <fieldset class="looks">
+      <legend class="label" style="grid-column: 1 / -1; margin: 0;">Elige uno</legend>
+      {{range .Options}}
+      <label class="look">
+        <input type="radio" name="choice" value="{{.Value}}" required {{if .Checked}}checked{{end}}>
+        <figure>
+          <img src="{{.ImageURL}}" alt="Look {{.Letter}}{{with .Name}}: {{.}}{{end}}" width="600" height="800">
+          <figcaption><span class="letter">{{.Letter}}</span><span>{{if .Name}}{{.Name}}{{else}}Look {{.Letter}}{{end}}</span></figcaption>
+        </figure>
+        <span class="pick" aria-hidden="true">Este</span>
+      </label>
+      {{end}}
+    </fieldset>
+
+    {{with .Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+
+    <fieldset id="why">
+      <legend>¿Por qué? <span class="optional">· opcional, marca las que quieras</span></legend>
+      <div class="chips">
+        {{range .Reasons}}
+        <label class="chip"><input type="checkbox" name="reason" value="{{.ID}}" {{if .Checked}}checked{{end}}><span>{{.Label}}</span></label>
+        {{end}}
+      </div>
+    </fieldset>
+
+    <div class="field">
+      <label for="comment">¿Algo que quieras decirle? <span class="optional">· opcional</span></label>
+      <textarea id="comment" name="comment" maxlength="280" placeholder="Ej. el saco café te queda increíble, pero cambia los zapatos">{{.Comment}}</textarea>
+    </div>
+    <div class="field">
+      <label for="name">Tu nombre <span class="optional">· opcional, para que sepa quién opinó</span></label>
+      <input id="name" name="name" type="text" maxlength="40" autocomplete="given-name" value="{{.Name}}">
+    </div>
+
+    <button class="submit" type="submit">Enviar mi voto</button>
+    <p class="fine">Solo él verá tu voto y tu comentario. Este link deja de funcionar el {{.Expires}}.</p>
+  </form>
+
+{{else if eq .State "thanks"}}
+  <h1>¡Gracias!</h1>
+  <p class="lead">Ya le llegó tu opinión. {{.Verdict}}</p>
+
+  <section class="results" aria-label="Cómo va la votación">
+    {{range .Options}}
+    <div class="result{{if .Checked}} mine{{end}}">
+      <img src="{{.ImageURL}}" alt="Look {{.Letter}}" width="120" height="160">
+      <div>
+        <p class="name"><span class="letter">{{.Letter}}</span> {{if .Name}}{{.Name}}{{else}}Look {{.Letter}}{{end}}{{if .Checked}} · <strong>tu voto</strong>{{end}}</p>
+        <div class="bar" role="img" aria-label="{{.Percent}} por ciento"><i style="width: {{.Percent}}%"></i></div>
+        <p class="count">{{.Votes}} {{if eq .Votes 1}}voto{{else}}votos{{end}} · {{.Percent}}%</p>
+      </div>
+    </div>
+    {{end}}
+  </section>
+
+  <a class="again" href="{{.Action}}?cambiar=1">Cambiar mi voto</a>
+
+{{else if eq .State "closed"}}
+  <h1>Esta votación ya cerró</h1>
+  <p class="lead">Los links de Hechura duran tres días para cuidar las fotos de quien pregunta. Gracias por querer ayudar.</p>
+
+{{else}}
+  <h1>Este link no existe</h1>
+  <p class="lead">Revisa que lo hayas copiado completo, o pídele que te lo mande otra vez.</p>
+{{end}}
+
+  <footer>Hechura · asesor de imagen para hombres que no saben de moda.</footer>
+</main>
+</body>
+</html>

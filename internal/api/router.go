@@ -22,6 +22,7 @@ type Deps struct {
 	TTS    *TTSDeps            // nil = no server-side voice
 	Matrix *MatrixDeps         // Renderer may be nil
 	Signed *storage.SignedURLs // nil = no image proxy
+	Polls  *PollDeps           // nil = no "ask someone" polls
 }
 
 // NewRouter builds the HTTP handler.
@@ -50,6 +51,13 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("POST /session/{id}/matrix/complete", completeHandler(d.Matrix))
 	mux.HandleFunc("GET /session/{id}/saved-looks", savedLooksHandler(d.Store))
 	mux.HandleFunc("POST /session/{id}/saved-looks", saveLookHandler(d.Matrix))
+	if d.Polls != nil {
+		mux.HandleFunc("POST /session/{id}/polls", createPollHandler(d.Polls))
+		mux.HandleFunc("GET /session/{id}/polls", listPollsHandler(d.Polls))
+		// Public: the people he asks open these from a shared link.
+		mux.HandleFunc("GET /v/{token}", votePageHandler(d.Polls))
+		mux.HandleFunc("POST /v/{token}", voteSubmitHandler(d.Polls))
+	}
 
 	var handler http.Handler = mux
 	handler = APIKeyMiddleware(d.APIKey, handler)
@@ -67,13 +75,14 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// APIKeyMiddleware enforces a shared secret when one is configured.
+// APIKeyMiddleware enforces a shared secret when one is configured. Signed
+// images and the public vote pages (/v/) are reachable without it.
 func APIKeyMiddleware(key string, next http.Handler) http.Handler {
 	if key == "" {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/images/") {
+		if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/images/") || strings.HasPrefix(r.URL.Path, "/v/") {
 			next.ServeHTTP(w, r)
 			return
 		}

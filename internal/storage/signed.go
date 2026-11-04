@@ -48,7 +48,12 @@ func (s *SignedURLs) Upload(ctx context.Context, in UploadInput) (*UploadOutput,
 
 // URL returns /images/{key}?exp=…&sig=… on the API base URL.
 func (s *SignedURLs) URL(key string) string {
-	exp := s.now().Add(s.ttl).Unix()
+	return s.URLUntil(key, s.now().Add(s.ttl))
+}
+
+// URLUntil is URL with an explicit expiry, for links shared outside the app.
+func (s *SignedURLs) URLUntil(key string, until time.Time) string {
+	exp := until.Unix()
 	return fmt.Sprintf("%s/images/%s?exp=%d&sig=%s", s.baseURL, escapeKey(key), exp, s.sign(key, exp))
 }
 
@@ -73,6 +78,20 @@ func (s *SignedURLs) sign(key string, exp int64) string {
 	mac.Write([]byte{0})
 	mac.Write([]byte(strconv.FormatInt(exp, 10)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// KeyFromURL returns the object key of a URL made by URL, or "" when the URL
+// does not point at the image proxy.
+func KeyFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	key, ok := strings.CutPrefix(u.Path, "/images/")
+	if !ok || key == "" || strings.Contains(key, "..") {
+		return ""
+	}
+	return key
 }
 
 // escapeKey keeps slashes (they are path segments) and escapes the rest.

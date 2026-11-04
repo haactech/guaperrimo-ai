@@ -1,7 +1,8 @@
 # API HTTP
 
 Base local: `http://<host>:8080`. Si `API_KEY` está configurada, todas las
-rutas menos `/health` exigen la cabecera `X-API-Key`.
+rutas menos `/health`, `/images/…` (links firmados) y `/v/…` (páginas de
+voto públicas) exigen la cabecera `X-API-Key`.
 
 ## `GET /health`
 
@@ -368,3 +369,55 @@ Responde `200` con `audio/mpeg`. `400` sin texto o con más de 1,200
 caracteres, `502` si ElevenLabs falla (la app cae a la voz del iPhone). Los
 últimos 64 textos quedan en memoria, así que repetir un mensaje no se cobra
 dos veces.
+
+## Pregúntale a alguien (votaciones entre dos looks)
+
+El usuario comparte un link (por WhatsApp, normalmente) con la gente en la que
+confía; quien lo abre elige el look que le recomienda, puede marcar razones y
+dejar un comentario, y el resultado vuelve a la app. No hay cuentas: el link
+es la única llave, dura 72 horas y la página nunca muestra el nombre del
+usuario.
+
+### `POST /session/{id}/polls`
+
+```json
+{"look_ids": ["look_1", "look_2"]}
+```
+
+Los dos looks deben estar renderizados (`ready`). Responde `201` con la
+votación (mismo formato que en la lista). `400` si no son dos looks
+distintos, `404` sin sesión, `409` si un look no está listo o su imagen no es
+de la sesión, `429` después de 5 votaciones por sesión.
+
+### `GET /session/{id}/polls`
+
+```json
+{"polls": [{
+  "id": "h9jaIIuhLfIIUIcmd_MGmw",
+  "url": "https://<PUBLIC_BASE_URL>/v/h9jaIIuhLfIIUIcmd_MGmw",
+  "open": true, "created_at": "…", "expires_at": "…",
+  "total_votes": 4,
+  "options": [
+    {"look_id": "look_1", "name": "Clásico de lino", "image_url": "…", "vote_count": 3,
+     "reasons": [{"id": "color", "label": "El color le queda mejor", "count": 2}]},
+    {"look_id": "look_2", "name": "Mezclilla relajado", "image_url": "…", "vote_count": 1, "reasons": []}
+  ],
+  "votes": [{"choice": 0, "voter_name": "Mariana", "comment": "El verde te queda increíble",
+             "reasons": ["El color le queda mejor"], "created_at": "…"}]
+}]}
+```
+
+`choice` es el índice en `options`; `votes` va del más nuevo al más viejo y
+solo trae nombre si quien votó lo escribió. Razones posibles: `color`,
+`occasion`, `fit`, `elegant`, `modern`, `himself`.
+
+### `GET /v/{token}` y `POST /v/{token}` (públicas)
+
+La página de voto (HTML, funciona sin JavaScript). Una cookie por navegador
+identifica a quien vota: si vuelve a votar, su voto se reemplaza. Máximo 50
+votos por votación, comentario de 280 caracteres y nombre de 40. La página no
+se indexa (`X-Robots-Tag`), no manda referrer y solo carga sus propias
+imágenes; cuando la votación cierra ya no muestra las fotos (`410`).
+
+El link usa `PUBLIC_BASE_URL`: mientras el servidor corra en la red local,
+solo lo abren teléfonos en la misma red.
